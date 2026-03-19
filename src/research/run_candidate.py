@@ -7,8 +7,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
-import pandas as pd
-
+from data.bybit_loader import download_and_save
 from processing.data_processor import process
 from research.rule_builder import build_rule_candidates
 from research.alpha_miner import prepare_pa_features, apply_candidate, split_df
@@ -16,17 +15,6 @@ from backtest.engine import run_backtest, calculate_metrics
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 REPORTS_DIR = BASE_DIR / "reports"
-
-
-def build_description(candidate: dict) -> str:
-    return (
-        f"{candidate['direction'].upper()} | "
-        f"breakout {candidate['breakout_lookback']} | "
-        f"body >= {candidate['body_ratio_threshold']} | "
-        f"hold {candidate['hold_bars']} | "
-        f"trend={candidate['use_trend_filter']} | "
-        f"vol={candidate['use_vol_filter']}"
-    )
 
 
 def parse_args():
@@ -42,11 +30,71 @@ def parse_args():
         action="store_true",
         help="Save one-candidate JSON report to reports/"
     )
+    parser.add_argument(
+        "--refresh-data",
+        action="store_true",
+        help="Refresh BTCUSDT 15m/30m candles from Bybit before processing"
+    )
     return parser.parse_args()
+
+
+def refresh_market_data():
+    print("Refreshing market data from Bybit...")
+    download_and_save(symbol="BTCUSDT", interval="15", total=2000, category="linear")
+    download_and_save(symbol="BTCUSDT", interval="30", total=2000, category="linear")
+    print("Market data refreshed.")
+    print()
+
+
+def build_description(candidate):
+    family = candidate["family"]
+
+    if family == "breakout":
+        return (
+            f"{candidate['family']} | "
+            f"{candidate['direction']} | "
+            f"breakout={candidate['breakout_lookback']} | "
+            f"body>={candidate['body_ratio_threshold']} | "
+            f"hold={candidate['hold_bars']} | "
+            f"trend={candidate['use_trend_filter']} | "
+            f"vol={candidate['use_vol_filter']}"
+        )
+
+    if family == "mean_reversion":
+        return (
+            f"{candidate['family']} | "
+            f"{candidate['direction']} | "
+            f"zscore>={candidate['zscore_threshold']} | "
+            f"hold={candidate['hold_bars']} | "
+            f"trend={candidate['use_trend_filter']}"
+        )
+
+    if family == "trend_pullback":
+        return (
+            f"{candidate['family']} | "
+            f"{candidate['direction']} | "
+            f"pullback>={candidate['pullback_threshold']} | "
+            f"hold={candidate['hold_bars']} | "
+            f"trend={candidate['use_trend_filter']} | "
+            f"vol={candidate['use_vol_filter']}"
+        )
+
+    return str(candidate)
+
+
+def is_stable_candidate(train_m, test_m):
+    return (
+        test_m["total_return_pct"] > -5
+        and test_m["trades"] > 10
+        and abs(test_m["total_return_pct"] - train_m["total_return_pct"]) < 10
+    )
 
 
 def main():
     args = parse_args()
+
+    if args.refresh_data:
+        refresh_market_data()
 
     df = process()
     df = prepare_pa_features(df)
@@ -70,12 +118,7 @@ def main():
     train_m = calculate_metrics(train_bt)
     test_m = calculate_metrics(test_bt)
 
-    stable = (
-        test_m["total_return_pct"] > -5
-        and test_m["trades"] > 10
-        and abs(test_m["total_return_pct"] - train_m["total_return_pct"]) < 10
-    )
-
+    stable = is_stable_candidate(train_m, test_m)
     description = build_description(candidate)
 
     print()

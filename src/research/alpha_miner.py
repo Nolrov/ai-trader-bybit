@@ -1,5 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 import sys
+import argparse
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -7,12 +8,31 @@ sys.path.append(str(ROOT_DIR))
 
 import pandas as pd
 
+from data.bybit_loader import download_and_save
 from processing.data_processor import process
 from research.rule_builder import build_rule_candidates
 from backtest.engine import apply_position_logic, run_backtest, calculate_metrics
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 REPORTS_DIR = BASE_DIR / "reports"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run alpha miner")
+    parser.add_argument(
+        "--refresh-data",
+        action="store_true",
+        help="Refresh BTCUSDT 15m/30m candles from Bybit before processing",
+    )
+    return parser.parse_args()
+
+
+def refresh_market_data():
+    print("Refreshing market data from Bybit...")
+    download_and_save(symbol="BTCUSDT", interval="15", total=2000, category="linear")
+    download_and_save(symbol="BTCUSDT", interval="30", total=2000, category="linear")
+    print("Market data refreshed.")
+    print()
 
 
 def prepare_pa_features(df):
@@ -32,7 +52,10 @@ def prepare_pa_features(df):
         (df["ret_15m"] - df["ret_mean_20"]) / df["ret_std_20"].replace(0, pd.NA)
     )
 
-    df["ema_gap_15m"] = (df["close_15m"] - df["ema_fast_30m"]) / df["ema_fast_30m"].replace(0, pd.NA)
+    df["ema_gap_15m"] = (
+        (df["close_15m"] - df["ema_fast_30m"])
+        / df["ema_fast_30m"].replace(0, pd.NA)
+    )
 
     return df
 
@@ -233,7 +256,10 @@ def evaluate_candidate(train_df, test_df, candidate):
     }
 
 
-def run_alpha_miner():
+def run_alpha_miner(refresh_data=False):
+    if refresh_data:
+        refresh_market_data()
+
     df = process()
     df = prepare_pa_features(df)
 
@@ -320,4 +346,5 @@ def run_alpha_miner():
 
 
 if __name__ == "__main__":
-    run_alpha_miner()
+    args = parse_args()
+    run_alpha_miner(refresh_data=args.refresh_data)

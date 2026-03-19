@@ -30,7 +30,12 @@ def process():
     df_30 = add_features(df_30)
 
     df_15["timestamp_30m"] = df_15["timestamp"].dt.floor("30min")
+
     df_30 = df_30.rename(columns={"timestamp": "timestamp_30m"})
+    df_30 = df_30.sort_values("timestamp_30m").copy()
+
+    cols_to_shift = [c for c in df_30.columns if c != "timestamp_30m"]
+    df_30[cols_to_shift] = df_30[cols_to_shift].shift(1)
 
     df = df_15.merge(
         df_30,

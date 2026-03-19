@@ -1,68 +1,92 @@
-AI Crypto Trader (Bybit, BTCUSDT)
-1. Overview
-Исследовательская торговая система для BTC/USDT (Bybit), работающая на 15m/30m.
-Цель — не писать стратегии вручную, а автоматически находить и использовать устойчивые альфы.
+# AI Crypto Trader (Bybit, BTCUSDT)
 
-2. Архитектура
-Контур A — Data & Features
-* загрузка OHLCV (15m, 30m)
-* очистка и нормализация
-* индикаторы (EMA, RSI, volatility)
-* PA-признаки (body, range, breakout)
-Контур B — Research (Alpha Miner)
-* генерация кандидатов стратегий (Price Action + фильтры)
-* бэктест каждой гипотезы
-* расчёт метрик (PnL, Sharpe, Drawdown, Trades)
-* сохранение результатов
-Контур C — (в разработке)
-* walk-forward валидация
-* alpha bank (устойчивые стратегии)
-* policy manager (выбор стратегии под рынок)
-* risk manager
+## Overview
+Исследовательская торговая система для BTC/USDT на Bybit с основными таймфреймами 15m и 30m.
 
-3. Текущие возможности
-* загрузка и объединение 15m + 30m данных
-* feature engineering
-* backtest с комиссиями
-* trade log и метрики
-* анализ сделок
-* alpha miner v1 (генерация и тест стратегий)
+Цель проекта — не писать стратегии вручную под текущий рынок, а автоматически:
+1. генерировать гипотезы,
+2. тестировать их,
+3. отбирать устойчивые,
+4. использовать лучшие идеи в торговле.
 
-4. Ограничения текущей версии
-* нет walk-forward (риск переобучения)
-* нет risk management
-* нет live/paper trading
-* стратегии оцениваются только на одном периоде
+## Core Idea
+Система не должна зависеть от одной стратегии.
 
-5. Roadmap
-Ближайшие шаги
-* walk-forward validation
-* фильтрация устойчивых стратегий
-* alpha bank
-Далее
-* policy manager (выбор стратегии по режиму рынка)
-* paper trading
-* интеграция с Bybit API (testnet ? mainnet)
+Правильный цикл:
+- data -> features -> research -> validation -> alpha bank -> policy -> execution
 
-6. Структура проекта
+То есть проект строится как исследовательский трейдер, а не как один фиксированный торговый алгоритм.
+
+## Architecture
+
+### A. Data & Features
+- загрузка OHLCV с Bybit
+- работа с 15m и 30m
+- очистка и валидация свечей
+- индикаторы и признаки
+- price action признаки
+
+### B. Research
+- генерация кандидатов стратегий
+- бэктест гипотез
+- расчёт метрик
+- логирование результатов
+- alpha miner v1
+
+### C. Selection & Execution
+Пока не реализовано полностью:
+- walk-forward validation
+- alpha bank
+- strategy/policy selection
+- risk manager
+- paper trading
+- live execution через Bybit API
+
+## Current Status
+Done:
+- data loader for Bybit
+- candle validation
+- feature engineering
+- 15m/30m merged dataset
+- backtest prototype
+- trade log and summary reports
+- alpha miner v1 for price action candidates
+
+In progress:
+- project refactoring
+- walk-forward validation
+
+Not implemented yet:
+- alpha bank
+- policy manager
+- risk manager
+- paper trading
+- testnet trading
+- live trading
+
+## Current Limitations
+Текущие результаты alpha miner пока не подтверждены walk-forward проверкой.
+
+Это значит:
+- найденные кандидаты могут быть переобучены,
+- текущие стратегии нельзя считать готовыми к real trading,
+- проект находится на research stage.
+
+## Roadmap
+1. Refactor project structure
+2. Add walk-forward validation
+3. Filter stable candidates
+4. Build alpha bank
+5. Add policy manager
+6. Add paper trading
+7. Connect Bybit testnet
+8. Move to controlled live trading
+
+## Project Structure
+```text
 src/
-  data/          # загрузка данных
-  features/      # индикаторы и признаки
-  processing/    # подготовка датасета
-  research/      # alpha miner и генерация стратегий
-  backtest/      # тестирование и анализ
-
-7. Основная идея
-Система не оптимизирует одну стратегию.
-Она:
-1. генерирует множество гипотез
-2. тестирует их
-3. отбирает устойчивые
-4. использует их в зависимости от рынка
-
-8. Цель
-Построить трейдера, который:
-* адаптируется к рынку
-* минимизирует просадки
-* способен со временем улучшаться
-
+  data/        # data loading
+  features/    # indicators and feature generation
+  processing/  # dataset preparation
+  research/    # alpha miner and validators
+  backtest/    # backtest and trade analysis

@@ -132,3 +132,39 @@ multi-alpha architecture
 single-alpha execution  
 
 Это временно.
+
+## System Map (entry files)
+
+### Project state
+- README.md
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/README.md
+
+### Data
+- bybit_loader.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/data/bybit_loader.py
+
+### Processing
+- data_processor.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/processing/data_processor.py
+- feature_factory.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/features/feature_factory.py
+
+### Backtest
+- engine.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/backtest/engine.py
+- analyze_trades.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/backtest/analyze_trades.py
+
+### Research
+- rule_builder.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/rule_builder.py
+- validators.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/validators.py
+- alpha_miner.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/alpha_miner.py
+- run_candidate.py
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/run_candidate.py
+
+### Legacy / ignore
+- strategy.py (obsolete, do not use)
+  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/backtest/strategy.py

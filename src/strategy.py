@@ -127,7 +127,7 @@ def build_trade_log(df, fee_per_trade=0.0006):
                 else:
                     gross_return = (current_trade["entry_price"] / current_price) - 1
 
-                exit_fee = fee_per_trade if current_position != 0 else fee_per_trade
+                exit_fee = fee_per_trade
                 net_return = gross_return - current_trade["fee_paid"] - exit_fee
 
                 trade_row = {
@@ -190,7 +190,7 @@ def build_trade_log(df, fee_per_trade=0.0006):
 def save_backtest_report(df):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "strategy_backtest.csv"
-    df.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False, sep=";")
     logging.info(f"Saved backtest report: {output_path}")
     return output_path
 
@@ -198,7 +198,7 @@ def save_backtest_report(df):
 def save_trade_log(trade_log):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "trade_log.csv"
-    trade_log.to_csv(output_path, index=False)
+    trade_log.to_csv(output_path, index=False, sep=";")
     logging.info(f"Saved trade log: {output_path}")
     return output_path
 
@@ -207,7 +207,7 @@ def save_summary(metrics):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "backtest_summary.csv"
     summary_df = pd.DataFrame([metrics])
-    summary_df.to_csv(output_path, index=False)
+    summary_df.to_csv(output_path, index=False, sep=";")
     logging.info(f"Saved summary: {output_path}")
     return output_path
 

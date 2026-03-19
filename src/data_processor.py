@@ -1,10 +1,16 @@
+from pathlib import Path
+
 import pandas as pd
 from feature_factory import add_features
 
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+
+
 def load_data():
-    df_15 = pd.read_csv("../data/btcusdt_15m.csv")
-    df_30 = pd.read_csv("../data/btcusdt_30m.csv")
+    df_15 = pd.read_csv(DATA_DIR / "btcusdt_15m.csv")
+    df_30 = pd.read_csv(DATA_DIR / "btcusdt_30m.csv")
 
     df_15["timestamp"] = pd.to_datetime(df_15["timestamp"])
     df_30["timestamp"] = pd.to_datetime(df_30["timestamp"])

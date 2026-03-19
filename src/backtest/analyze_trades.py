@@ -8,7 +8,7 @@ REPORTS_DIR = BASE_DIR / "reports"
 
 def load_trade_log():
     path = REPORTS_DIR / "trade_log.csv"
-    df = pd.read_csv(path, sep=";")
+    df = pd.read_csv(path)
     df["entry_time"] = pd.to_datetime(df["entry_time"])
     df["exit_time"] = pd.to_datetime(df["exit_time"])
     return df

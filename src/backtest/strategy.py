@@ -184,7 +184,7 @@ def build_trade_log(df, fee_per_trade=0.0006):
 def save_backtest_report(df):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "strategy_backtest.csv"
-    df.to_csv(output_path, index=False, sep=";")
+    df.to_csv(output_path, index=False)
     logging.info(f"Saved backtest report: {output_path}")
     return output_path
 
@@ -192,7 +192,7 @@ def save_backtest_report(df):
 def save_trade_log(trade_log):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "trade_log.csv"
-    trade_log.to_csv(output_path, index=False, sep=";")
+    trade_log.to_csv(output_path, index=False)
     logging.info(f"Saved trade log: {output_path}")
     return output_path
 
@@ -200,7 +200,7 @@ def save_trade_log(trade_log):
 def save_summary(metrics):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "backtest_summary.csv"
-    pd.DataFrame([metrics]).to_csv(output_path, index=False, sep=";")
+    pd.DataFrame([metrics]).to_csv(output_path, index=False)
     logging.info(f"Saved summary: {output_path}")
     return output_path
 

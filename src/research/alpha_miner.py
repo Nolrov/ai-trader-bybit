@@ -210,7 +210,45 @@ def split_df(df):
     return df.iloc[:split].copy(), df.iloc[split:].copy()
 
 
-def calculate_candidate_score(train_m, test_m):
+def passes_candidate_filters(train_m, test_m):
+    reasons = []
+
+    train_trades = train_m.get("trades", 0)
+    test_trades = test_m.get("trades", 0)
+
+    train_return = train_m.get("total_return_pct", 0.0)
+    test_return = test_m.get("total_return_pct", 0.0)
+
+    train_dd = train_m.get("max_drawdown_pct", 0.0)
+    test_dd = test_m.get("max_drawdown_pct", 0.0)
+
+    test_sharpe = test_m.get("sharpe_approx", 0.0)
+
+    if train_trades < 20:
+        reasons.append("too_few_train_trades")
+
+    if test_trades < 10:
+        reasons.append("too_few_test_trades")
+
+    if test_return <= 0:
+        reasons.append("non_positive_test_return")
+
+    if test_sharpe <= 0:
+        reasons.append("non_positive_test_sharpe")
+
+    if test_dd < -10:
+        reasons.append("test_drawdown_too_large")
+
+    if abs(test_return - train_return) > 10:
+        reasons.append("train_test_gap_too_large")
+
+    if abs(test_dd - train_dd) > 10:
+        reasons.append("train_test_dd_gap_too_large")
+
+    return len(reasons) == 0, reasons
+
+
+def calculate_candidate_score(train_m, test_m, is_valid):
     score = 0.0
 
     score += test_m["total_return_pct"] * 1.0
@@ -222,15 +260,10 @@ def calculate_candidate_score(train_m, test_m):
     if test_m["trades"] < 10:
         score -= 10.0
 
+    if not is_valid:
+        score -= 100.0
+
     return round(score, 4)
-
-
-def is_stable_candidate(train_m, test_m):
-    return (
-        test_m["total_return_pct"] > -5
-        and test_m["trades"] > 10
-        and abs(test_m["total_return_pct"] - train_m["total_return_pct"]) < 10
-    )
 
 
 def evaluate_candidate(train_df, test_df, candidate):
@@ -243,15 +276,16 @@ def evaluate_candidate(train_df, test_df, candidate):
     train_m = calculate_metrics(train_bt)
     test_m = calculate_metrics(test_bt)
 
-    stable = is_stable_candidate(train_m, test_m)
-    score = calculate_candidate_score(train_m, test_m)
+    is_valid, rejection_reasons = passes_candidate_filters(train_m, test_m)
+    score = calculate_candidate_score(train_m, test_m, is_valid)
 
     return {
         "candidate": candidate,
         "description": build_description(candidate),
         "train_metrics": train_m,
         "test_metrics": test_m,
-        "stable": stable,
+        "is_valid": is_valid,
+        "rejection_reasons": rejection_reasons,
         "score": score,
     }
 
@@ -287,13 +321,17 @@ def run_alpha_miner(refresh_data=False):
                 "test_dd": test_m["max_drawdown_pct"],
                 "train_trades": train_m["trades"],
                 "test_trades": test_m["trades"],
-                "stable": evaluation["stable"],
+                "is_valid": evaluation["is_valid"],
+                "rejection_reasons": "|".join(evaluation["rejection_reasons"]),
                 "score": evaluation["score"],
             }
         )
 
     df_res = pd.DataFrame(results)
-    df_res = df_res.sort_values(by=["score", "test_return"], ascending=[False, False])
+    df_res = df_res.sort_values(
+        by=["is_valid", "score", "test_return"],
+        ascending=[False, False, False],
+    )
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORTS_DIR / "alpha_miner_wf.csv"
@@ -324,7 +362,9 @@ def run_alpha_miner(refresh_data=False):
             f" trades: train={row['train_trades']} "
             f"test={row['test_trades']}"
         )
-        print(f" stable: {row['stable']}")
+        print(f" valid: {row['is_valid']}")
+        if row["rejection_reasons"]:
+            print(f" rejection_reasons: {row['rejection_reasons']}")
         print()
 
     print("=== FAMILY SUMMARY ===")
@@ -335,7 +375,7 @@ def run_alpha_miner(refresh_data=False):
             candidates=("id", "count"),
             avg_test_return=("test_return", "mean"),
             avg_score=("score", "mean"),
-            stable_count=("stable", "sum"),
+            valid_count=("is_valid", "sum"),
         )
         .sort_values(by="avg_score", ascending=False)
     )

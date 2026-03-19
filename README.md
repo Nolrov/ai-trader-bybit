@@ -1,170 +1,267 @@
 # AI Crypto Trader (Bybit, BTCUSDT, 15m/30m)
 
 ## Mission
-Собрать систему:
-data → features → alpha → decision → execution  
-и довести её до Bybit testnet.
+
+Построить систему:
+
+data → features → strategies → alpha mining → decision → execution
+
+и довести её до стабильной торговли на Bybit (сначала testnet).
 
 ---
 
-## Current Operating Mode
+## Current State (реальное состояние проекта)
 
-- Архитектура: multi-alpha (НЕ отменяется)
-- Текущий режим: single-alpha execution
-- Research: временно заморожен
-- Цель: запустить paper/testnet цикл
+Система находится на этапе **research + честная оценка стратегий**.
 
-Активная альфа:
-candidate_id = 254 (trend_pullback long)
+Что уже есть:
+
+* корректные данные (без leakage)
+* multi-timeframe (15m + 30m)
+* alpha miner (перебор стратегий)
+* стратегии вынесены в отдельные модули (plugins)
+* честный train/test split
+* базовая фильтрация кандидатов
+
+Что важно:
+
+* система больше **не переоценивает стратегии**
+* теперь большинство кандидатов отваливается — это нормально
 
 ---
 
-## What Works Now
+## Architecture
 
 ### Data
-- bybit_loader.py — загружает BTCUSDT 15m/30m
-- пишет в /data
-- есть validation + freshness
 
-### Processing
-- data_processor.py — собирает dataset
-- feature_factory.py — считает фичи
+* `bybit_loader.py`
 
-### Research
-- alpha_miner.py
-  - генерирует кандидатов
-  - считает метрики
-  - поддерживает --refresh-data
-
-- run_candidate.py
-  - тест одного кандидата
-  - поддерживает --refresh-data
-
-### Backtest
-- engine.py
-- комиссия учитывается
+  * загружает BTCUSDT (15m / 30m)
+  * чистит данные (дубликаты, OHLC)
+  * проверяет свежесть
 
 ---
 
-## What DOES NOT Exist Yet
+### Processing
 
-- execution (биржа)
-- paper trading loop
-- risk manager
-- alpha bank (как система)
-- policy manager (дирижёр)
+* `data_processor.py`
+
+  * объединяет 15m + 30m
+  * устраняет lookahead leakage (30m сдвиг)
+
+* `feature_factory.py`
+
+  * базовые фичи (body, breakout и т.д.)
+
+---
+
+### Strategies (НОВАЯ АРХИТЕКТУРА)
+
+Путь:
+
+```
+src/research/strategies/
+```
+
+Каждая стратегия — отдельный файл:
+
+* breakout.py
+* trend_pullback.py
+* mean_reversion.py
+
+Регистрация:
+
+* `registry.py`
+
+Важно:
+
+* стратегии больше НЕ зашиты в коде
+* rule_builder генерирует параметры, но не содержит логики
+
+---
+
+### Research
+
+* `alpha_miner.py`
+
+  * перебирает кандидатов
+  * считает метрики
+  * выводит TOP
+  * поддерживает `--refresh-data`
+
+* `run_candidate.py`
+
+  * детальный анализ одной стратегии
+
+---
+
+### Backtest
+
+* `engine.py`
+
+  * считает PnL
+  * учитывает комиссию
+  * строит equity
 
 ---
 
 ## Entrypoints
 
 ### Обновить данные
-python src/data/bybit_loader.py
 
-### Alpha miner
-python src/research/alpha_miner.py
+```bash
 python src/research/alpha_miner.py --refresh-data
-
-### Один кандидат
-python src/research/run_candidate.py --candidate-id 254
-python src/research/run_candidate.py --candidate-id 254 --refresh-data
+```
 
 ---
 
-## Active Alpha (temporary)
+### Найти лучшие стратегии
 
-ID: 254  
-family: trend_pullback  
-direction: long  
-
-Используется для первого запуска execution.
+```bash
+python src/research/alpha_miner.py
+```
 
 ---
 
-## Next Step (ONLY)
+### Проверить стратегию
 
-Сделать вертикальный срез:
-
-1. live_loop.py
-   - обновляет данные
-   - считает сигнал (1 альфа)
-   - принимает решение
-
-2. risk_manager.py
-   - 1 позиция
-   - фикс размер
-   - запрет дублирования
-
-3. bybit_executor.py
-   - testnet
-   - market order
-   - close position
+```bash
+python src/research/run_candidate.py --candidate-id 270
+```
 
 ---
 
-## Rules
+## Important Realization
 
-- НЕ добавлять новые стратегии
-- НЕ менять alpha_miner
-- НЕ делать дирижёр
-- НЕ делать DRL
+Если раньше были хорошие результаты, а сейчас:
 
-Пока не работает:
+```
+VALID TOP = пусто
+```
 
-data → signal → order → close
+Это означает:
+
+* раньше был leakage
+* сейчас система стала честной
+
+Это **хорошо**, а не плохо.
 
 ---
 
-## Future (после testnet)
+## Current Problem
 
-- добавить 2–3 альфы
-- включить alpha bank
-- добавить простой policy manager
-- затем DRL
+Сейчас стратегии:
+
+* слишком простые
+* не учитывают режим рынка
+
+Поэтому:
+
+* либо не проходят фильтр
+* либо нестабильны
+
+---
+
+## What Needs To Be Improved
+
+### 1. Market Regime (КРИТИЧНО)
+
+Добавить:
+
+* volatility regime (ATR / range)
+* trend strength (EMA distance)
+
+Использование:
+
+* breakout → только high vol
+* mean reversion → только low vol
+* trend → только сильный тренд
+
+---
+
+### 2. Улучшение стратегий
+
+Не добавлять много, а улучшать текущие:
+
+* breakout с фильтром ATR
+* trend_pullback с фильтром тренда
+* убрать шумовые комбинации
+
+---
+
+### 3. Нормальный скоринг
+
+Сейчас можно усилить:
+
+* штраф за drawdown
+* штраф за малое число трейдов
+* штраф за нестабильность
+
+---
+
+### 4. Rolling / Walk-forward (позже)
+
+Сейчас простой split:
+
+```
+train → test
+```
+
+Дальше нужно:
+
+```
+train → validate → test
+или rolling окна
+```
+
+---
+
+## What NOT To Do
+
+Пока не нужно:
+
+* DRL
+* execution
+* сложный policy manager
+* overengineering
+
+---
+
+## Next Steps (по порядку)
+
+1. Добавить **trend strength filter**
+2. Добавить **volatility regime**
+3. Улучшить breakout и trend_pullback
+4. Добиться появления стабильных кандидатов
+5. Только после этого → execution
 
 ---
 
 ## Core Principle
 
-Сейчас:
+Система должна:
 
-multi-alpha architecture  
-single-alpha execution  
+```
+не искать идеальные стратегии,
+а отбрасывать плохие
+```
 
-Это временно.
+Если после фильтрации почти ничего не осталось:
 
-## System Map (entry files)
+→ фильтр работает правильно
 
-### Project state
-- README.md
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/README.md
+---
 
-### Data
-- bybit_loader.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/data/bybit_loader.py
+## Summary
 
-### Processing
-- data_processor.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/processing/data_processor.py
-- feature_factory.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/features/feature_factory.py
+Сейчас у тебя:
 
-### Backtest
-- engine.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/backtest/engine.py
-- analyze_trades.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/backtest/analyze_trades.py
+* честные данные
+* честный бэктест
+* нормальная архитектура
 
-### Research
-- rule_builder.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/rule_builder.py
-- validators.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/validators.py
-- alpha_miner.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/alpha_miner.py
-- run_candidate.py
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/research/run_candidate.py
+Следующий этап:
 
-### Legacy / ignore
-- strategy.py (obsolete, do not use)
-  https://github.com/Nolrov/ai-trader-bybit/blob/main/src/backtest/strategy.py
+```
+сделать стратегии умнее, а не больше
+```

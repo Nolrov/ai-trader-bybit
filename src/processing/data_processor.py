@@ -1,10 +1,15 @@
 from pathlib import Path
+import sys
 
 import pandas as pd
-from feature_factory import add_features
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT_DIR))
+
+from features.feature_factory import add_features
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 
 

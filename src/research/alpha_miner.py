@@ -6,7 +6,7 @@ sys.path.append(str(ROOT_DIR))
 
 import pandas as pd
 
-from data_processor import process
+from processing.data_processor import process
 from research.rule_builder import build_rule_candidates
 from research.validators import calculate_backtest_metrics, is_candidate_valid
 

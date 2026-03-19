@@ -28,22 +28,40 @@ def setup_logging():
 
 def generate_signals(df):
     df = df.copy()
+
     df["signal"] = 0
+    df["position"] = 0
 
-    long_condition = (
-        (df["ema_fast_15m"] > df["ema_slow_15m"]) &
-        (df["ema_fast_30m"] > df["ema_slow_30m"]) &
-        (df["rsi_15m"] < 70)
-    )
+    vol_threshold = df["volatility_15m"].rolling(50).median()
+    in_position = 0
 
-    short_condition = (
-        (df["ema_fast_15m"] < df["ema_slow_15m"]) &
-        (df["ema_fast_30m"] < df["ema_slow_30m"]) &
-        (df["rsi_15m"] > 30)
-    )
+    for i in range(1, len(df)):
+        row = df.iloc[i]
+        enough_vol = pd.notna(vol_threshold.iloc[i]) and row["volatility_15m"] > vol_threshold.iloc[i]
 
-    df.loc[long_condition, "signal"] = 1
-    df.loc[short_condition, "signal"] = -1
+        if in_position == 0:
+            long_entry = (
+                row["ema_fast_15m"] > row["ema_slow_15m"] and
+                row["ema_fast_30m"] > row["ema_slow_30m"] and
+                row["rsi_15m"] < 65 and
+                enough_vol
+            )
+
+            if long_entry:
+                in_position = 1
+                df.at[df.index[i], "signal"] = 1
+
+        elif in_position == 1:
+            long_exit = (
+                row["rsi_15m"] > 55 or
+                row["ema_fast_15m"] < row["ema_slow_15m"]
+            )
+
+            if long_exit:
+                in_position = 0
+                df.at[df.index[i], "signal"] = 0
+
+        df.at[df.index[i], "position"] = in_position
 
     return df
 
@@ -52,12 +70,10 @@ def backtest(df, fee_per_trade=0.0006):
     df = df.copy()
 
     df["return"] = df["close_15m"].pct_change().fillna(0.0)
-    df["position"] = df["signal"].shift(1).fillna(0)
-
     df["trade"] = df["position"].diff().abs().fillna(0)
     df["fee"] = df["trade"] * fee_per_trade
 
-    df["strategy_return"] = (df["position"] * df["return"]) - df["fee"]
+    df["strategy_return"] = (df["position"].shift(1).fillna(0) * df["return"]) - df["fee"]
     df["equity"] = (1 + df["strategy_return"]).cumprod()
 
     return df
@@ -81,7 +97,7 @@ def calculate_metrics(df):
 
     trades = int((df["trade"] > 0).sum())
     long_signals = int((df["signal"] == 1).sum())
-    short_signals = int((df["signal"] == -1).sum())
+    flat_signals = int((df["signal"] == 0).sum())
 
     metrics = {
         "total_return_pct": round(total_return * 100, 2),
@@ -89,7 +105,7 @@ def calculate_metrics(df):
         "max_drawdown_pct": round(max_drawdown * 100, 2),
         "trades": trades,
         "long_signals": long_signals,
-        "short_signals": short_signals,
+        "flat_signals": flat_signals,
     }
 
     return metrics
@@ -104,12 +120,11 @@ def build_trade_log(df, fee_per_trade=0.0006):
         current_time = row.timestamp
         current_price = float(row.close_15m)
 
-        if current_trade is None and current_position != 0:
+        if current_trade is None and current_position == 1:
             current_trade = {
-                "side": "LONG" if current_position == 1 else "SHORT",
+                "side": "LONG",
                 "entry_time": current_time,
                 "entry_price": current_price,
-                "entry_equity": float(row.equity),
                 "entry_reason": "signal_change",
                 "bars_held": 0,
                 "fee_paid": fee_per_trade,
@@ -119,16 +134,9 @@ def build_trade_log(df, fee_per_trade=0.0006):
         if current_trade is not None:
             current_trade["bars_held"] += 1
 
-            previous_side = 1 if current_trade["side"] == "LONG" else -1
-
-            if current_position != previous_side:
-                if previous_side == 1:
-                    gross_return = (current_price / current_trade["entry_price"]) - 1
-                else:
-                    gross_return = (current_trade["entry_price"] / current_price) - 1
-
-                exit_fee = fee_per_trade
-                net_return = gross_return - current_trade["fee_paid"] - exit_fee
+            if current_position == 0:
+                gross_return = (current_price / current_trade["entry_price"]) - 1
+                net_return = gross_return - current_trade["fee_paid"] - fee_per_trade
 
                 trade_row = {
                     "side": current_trade["side"],
@@ -140,33 +148,15 @@ def build_trade_log(df, fee_per_trade=0.0006):
                     "gross_return_pct": round(gross_return * 100, 4),
                     "net_return_pct": round(net_return * 100, 4),
                     "entry_reason": current_trade["entry_reason"],
-                    "exit_reason": "signal_flip" if current_position != 0 else "flat",
+                    "exit_reason": "flat",
                 }
                 trades.append(trade_row)
-
-                if current_position != 0:
-                    current_trade = {
-                        "side": "LONG" if current_position == 1 else "SHORT",
-                        "entry_time": current_time,
-                        "entry_price": current_price,
-                        "entry_equity": float(row.equity),
-                        "entry_reason": "signal_change",
-                        "bars_held": 0,
-                        "fee_paid": fee_per_trade,
-                    }
-                else:
-                    current_trade = None
+                current_trade = None
 
     if current_trade is not None:
         last_row = df.iloc[-1]
         final_price = float(last_row["close_15m"])
-        previous_side = 1 if current_trade["side"] == "LONG" else -1
-
-        if previous_side == 1:
-            gross_return = (final_price / current_trade["entry_price"]) - 1
-        else:
-            gross_return = (current_trade["entry_price"] / final_price) - 1
-
+        gross_return = (final_price / current_trade["entry_price"]) - 1
         net_return = gross_return - current_trade["fee_paid"] - fee_per_trade
 
         trade_row = {
@@ -183,8 +173,7 @@ def build_trade_log(df, fee_per_trade=0.0006):
         }
         trades.append(trade_row)
 
-    trade_log = pd.DataFrame(trades)
-    return trade_log
+    return pd.DataFrame(trades)
 
 
 def save_backtest_report(df):
@@ -206,8 +195,7 @@ def save_trade_log(trade_log):
 def save_summary(metrics):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = REPORTS_DIR / "backtest_summary.csv"
-    summary_df = pd.DataFrame([metrics])
-    summary_df.to_csv(output_path, index=False, sep=";")
+    pd.DataFrame([metrics]).to_csv(output_path, index=False, sep=";")
     logging.info(f"Saved summary: {output_path}")
     return output_path
 

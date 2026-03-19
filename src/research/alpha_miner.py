@@ -29,8 +29,8 @@ def parse_args():
 
 def refresh_market_data():
     print("Refreshing market data from Bybit...")
-    download_and_save(symbol="BTCUSDT", interval="15", total=2000, category="linear")
-    download_and_save(symbol="BTCUSDT", interval="30", total=2000, category="linear")
+    download_and_save(symbol="BTCUSDT", interval="15", total=15000)
+    download_and_save(symbol="BTCUSDT", interval="30", total=10000)
     print("Market data refreshed.\n")
 
 
@@ -66,129 +66,51 @@ def split_df(df):
 
 # ================= APPLY STRATEGIES =================
 
-def apply_breakout_candidate(df, candidate):
-    df = df.copy()
 
-    lookback = candidate["breakout_lookback"]
-    body_ratio_threshold = candidate["body_ratio_threshold"]
-    direction = candidate["direction"]
-
-    prev_high = df["high_15m"].rolling(lookback).max().shift(1)
-    prev_low = df["low_15m"].rolling(lookback).min().shift(1)
-    vol_threshold = df["volatility_15m"].rolling(50).median()
-
-    if direction == "long":
-        entry = (
-            df["bullish_15m"]
-            & (df["body_ratio_15m"] >= body_ratio_threshold)
-            & (df["close_15m"] > prev_high)
-        )
-        if candidate["use_trend_filter"]:
-            entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
-    else:
-        entry = (
-            df["bearish_15m"]
-            & (df["body_ratio_15m"] >= body_ratio_threshold)
-            & (df["close_15m"] < prev_low)
-        )
-        if candidate["use_trend_filter"]:
-            entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
-
-    if candidate["use_vol_filter"]:
-        entry &= df["volatility_15m"] > vol_threshold
-
-    df["entry_signal"] = entry.fillna(False).astype(int)
-    df["position"] = apply_position_logic(
-        df["entry_signal"], candidate["hold_bars"], candidate["direction"]
-    )
-    return df
-
-
-def apply_mean_reversion_candidate(df, candidate):
-    df = df.copy()
-
-    z = df["zscore_ret_20"]
-    direction = candidate["direction"]
-
-    if direction == "long":
-        entry = z <= -candidate["zscore_threshold"]
-    else:
-        entry = z >= candidate["zscore_threshold"]
-
-    if candidate["use_trend_filter"]:
-        if direction == "long":
-            entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
-        else:
-            entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
-
-    df["entry_signal"] = entry.fillna(False).astype(int)
-    df["position"] = apply_position_logic(
-        df["entry_signal"], candidate["hold_bars"], candidate["direction"]
-    )
-    return df
-
-
-def apply_trend_pullback_candidate(df, candidate):
-    df = df.copy()
-
-    pullback = candidate["pullback_threshold"]
-    direction = candidate["direction"]
-    vol_threshold = df["volatility_15m"].rolling(50).median()
-
-    if direction == "long":
-        entry = (
-            (df["ema_fast_30m"] > df["ema_slow_30m"])
-            & (df["ema_gap_15m"] <= -pullback)
-            & df["bullish_15m"]
-        )
-    else:
-        entry = (
-            (df["ema_fast_30m"] < df["ema_slow_30m"])
-            & (df["ema_gap_15m"] >= pullback)
-            & df["bearish_15m"]
-        )
-
-    if candidate["use_vol_filter"]:
-        entry &= df["volatility_15m"] > vol_threshold
-
-    df["entry_signal"] = entry.fillna(False).astype(int)
-    df["position"] = apply_position_logic(
-        df["entry_signal"], candidate["hold_bars"], candidate["direction"]
-    )
-    return df
-
+from research.strategies.registry import STRATEGY_REGISTRY
 
 def apply_candidate(df, candidate):
     family = candidate["family"]
 
-    if family == "breakout":
-        return apply_breakout_candidate(df, candidate)
+    if family not in STRATEGY_REGISTRY:
+        raise ValueError(f"Unknown strategy: {family}")
 
-    if family == "mean_reversion":
-        return apply_mean_reversion_candidate(df, candidate)
+    func = STRATEGY_REGISTRY[family]["apply"]
 
-    if family == "trend_pullback":
-        return apply_trend_pullback_candidate(df, candidate)
+    df = func(df, candidate)
 
-    raise ValueError(f"Unknown candidate family: {family}")
+    df["position"] = apply_position_logic(
+        df["entry_signal"],
+        candidate["hold_bars"],
+        candidate["direction"]
+    )
+
+    return df
 
 
-# ================= METRICS =================
+
+# ================= FILTER =================
 
 def passes_candidate_filters(train_m, test_m):
     reasons = []
 
-    if train_m["trades"] < 20:
-        reasons.append("few_train_trades")
+    train_return = train_m["total_return_pct"]
+    test_return = test_m["total_return_pct"]
 
-    if test_m["trades"] < 10:
-        reasons.append("few_test_trades")
+    if train_return <= 0:
+        reasons.append("negative_train")
 
-    if test_m["total_return_pct"] <= 0:
-        reasons.append("bad_return")
+    if test_return <= 0.5:
+        reasons.append("low_test")
 
-    if test_m["sharpe_approx"] <= 0:
-        reasons.append("bad_sharpe")
+    if abs(test_return - train_return) > 3:
+        reasons.append("train_test_gap")
+
+    if test_m["trades"] < 15:
+        reasons.append("few_trades")
+
+    if test_m["sharpe_approx"] < 0.2:
+        reasons.append("low_sharpe")
 
     return len(reasons) == 0, reasons
 
@@ -229,13 +151,10 @@ def run_alpha_miner(refresh_data=False):
     df = prepare_pa_features(process())
     train_df, test_df = split_df(df)
 
-    candidates = build_rule_candidates()
     results = []
 
-    for i, c in enumerate(candidates, 1):
-        train_m, test_m, valid, reasons, score = evaluate_candidate(
-            train_df, test_df, c
-        )
+    for i, c in enumerate(build_rule_candidates(), 1):
+        train_m, test_m, valid, reasons, score = evaluate_candidate(train_df, test_df, c)
 
         results.append({
             "id": i,

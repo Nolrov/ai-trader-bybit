@@ -1,92 +1,134 @@
-# AI Crypto Trader (Bybit, BTCUSDT)
+# AI Crypto Trader (Bybit, BTCUSDT, 15m/30m)
 
-## Overview
-Исследовательская торговая система для BTC/USDT на Bybit с основными таймфреймами 15m и 30m.
+## Mission
+Собрать систему:
+data → features → alpha → decision → execution  
+и довести её до Bybit testnet.
 
-Цель проекта — не писать стратегии вручную под текущий рынок, а автоматически:
-1. генерировать гипотезы,
-2. тестировать их,
-3. отбирать устойчивые,
-4. использовать лучшие идеи в торговле.
+---
 
-## Core Idea
-Система не должна зависеть от одной стратегии.
+## Current Operating Mode
 
-Правильный цикл:
-- data -> features -> research -> validation -> alpha bank -> policy -> execution
+- Архитектура: multi-alpha (НЕ отменяется)
+- Текущий режим: single-alpha execution
+- Research: временно заморожен
+- Цель: запустить paper/testnet цикл
 
-То есть проект строится как исследовательский трейдер, а не как один фиксированный торговый алгоритм.
+Активная альфа:
+candidate_id = 254 (trend_pullback long)
 
-## Architecture
+---
 
-### A. Data & Features
-- загрузка OHLCV с Bybit
-- работа с 15m и 30m
-- очистка и валидация свечей
-- индикаторы и признаки
-- price action признаки
+## What Works Now
 
-### B. Research
-- генерация кандидатов стратегий
-- бэктест гипотез
-- расчёт метрик
-- логирование результатов
-- alpha miner v1
+### Data
+- bybit_loader.py — загружает BTCUSDT 15m/30m
+- пишет в /data
+- есть validation + freshness
 
-### C. Selection & Execution
-Пока не реализовано полностью:
-- walk-forward validation
-- alpha bank
-- strategy/policy selection
+### Processing
+- data_processor.py — собирает dataset
+- feature_factory.py — считает фичи
+
+### Research
+- alpha_miner.py
+  - генерирует кандидатов
+  - считает метрики
+  - поддерживает --refresh-data
+
+- run_candidate.py
+  - тест одного кандидата
+  - поддерживает --refresh-data
+
+### Backtest
+- engine.py
+- комиссия учитывается
+
+---
+
+## What DOES NOT Exist Yet
+
+- execution (биржа)
+- paper trading loop
 - risk manager
-- paper trading
-- live execution через Bybit API
+- alpha bank (как система)
+- policy manager (дирижёр)
 
-## Current Status
-Done:
-- data loader for Bybit
-- candle validation
-- feature engineering
-- 15m/30m merged dataset
-- backtest prototype
-- trade log and summary reports
-- alpha miner v1 for price action candidates
+---
 
-In progress:
-- project refactoring
-- walk-forward validation
+## Entrypoints
 
-Not implemented yet:
-- alpha bank
-- policy manager
-- risk manager
-- paper trading
-- testnet trading
-- live trading
+### Обновить данные
+python src/data/bybit_loader.py
 
-## Current Limitations
-Текущие результаты alpha miner пока не подтверждены walk-forward проверкой.
+### Alpha miner
+python src/research/alpha_miner.py
+python src/research/alpha_miner.py --refresh-data
 
-Это значит:
-- найденные кандидаты могут быть переобучены,
-- текущие стратегии нельзя считать готовыми к real trading,
-- проект находится на research stage.
+### Один кандидат
+python src/research/run_candidate.py --candidate-id 254
+python src/research/run_candidate.py --candidate-id 254 --refresh-data
 
-## Roadmap
-1. Refactor project structure
-2. Add walk-forward validation
-3. Filter stable candidates
-4. Build alpha bank
-5. Add policy manager
-6. Add paper trading
-7. Connect Bybit testnet
-8. Move to controlled live trading
+---
 
-## Project Structure
-```text
-src/
-  data/        # data loading
-  features/    # indicators and feature generation
-  processing/  # dataset preparation
-  research/    # alpha miner and validators
-  backtest/    # backtest and trade analysis
+## Active Alpha (temporary)
+
+ID: 254  
+family: trend_pullback  
+direction: long  
+
+Используется для первого запуска execution.
+
+---
+
+## Next Step (ONLY)
+
+Сделать вертикальный срез:
+
+1. live_loop.py
+   - обновляет данные
+   - считает сигнал (1 альфа)
+   - принимает решение
+
+2. risk_manager.py
+   - 1 позиция
+   - фикс размер
+   - запрет дублирования
+
+3. bybit_executor.py
+   - testnet
+   - market order
+   - close position
+
+---
+
+## Rules
+
+- НЕ добавлять новые стратегии
+- НЕ менять alpha_miner
+- НЕ делать дирижёр
+- НЕ делать DRL
+
+Пока не работает:
+
+data → signal → order → close
+
+---
+
+## Future (после testnet)
+
+- добавить 2–3 альфы
+- включить alpha bank
+- добавить простой policy manager
+- затем DRL
+
+---
+
+## Core Principle
+
+Сейчас:
+
+multi-alpha architecture  
+single-alpha execution  
+
+Это временно.

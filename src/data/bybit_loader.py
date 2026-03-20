@@ -9,7 +9,8 @@ import pandas as pd
 import requests
 
 
-BASE_URL = "https://api.bybit.com"
+BASE_URL_MAINNET = "https://api.bybit.com"
+BASE_URL_TESTNET = "https://api-testnet.bybit.com"
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 SRC_DIR = BASE_DIR / "src"
@@ -17,10 +18,31 @@ SRC_DIR = BASE_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
-from config.settings import load_settings  # noqa: E402
+from config.settings import AppSettings, load_settings  # noqa: E402
 
 
-def get_klines_full(symbol: str, interval: str, total: int, category: str) -> pd.DataFrame:
+def resolve_market_base_url(settings: AppSettings | None = None) -> str:
+    if settings is None:
+        settings = load_settings()
+    return BASE_URL_TESTNET if settings.execution.testnet else BASE_URL_MAINNET
+
+
+def build_data_filename(symbol: str, interval: str) -> str:
+    return f"{symbol.lower()}_{interval}m.csv"
+
+
+def get_data_path(symbol: str, interval: str) -> Path:
+    return DATA_DIR / build_data_filename(symbol=symbol, interval=interval)
+
+
+def get_klines_full(
+    symbol: str,
+    interval: str,
+    total: int,
+    category: str,
+    *,
+    base_url: str,
+) -> pd.DataFrame:
     if total <= 0:
         raise ValueError(f"total must be > 0, got {total}")
 
@@ -40,7 +62,7 @@ def get_klines_full(symbol: str, interval: str, total: int, category: str) -> pd
             params["end"] = end
 
         response = requests.get(
-            f"{BASE_URL}/v5/market/kline",
+            f"{base_url}/v5/market/kline",
             params=params,
             timeout=15,
         )
@@ -50,7 +72,7 @@ def get_klines_full(symbol: str, interval: str, total: int, category: str) -> pd
         if data.get("retCode") != 0:
             raise RuntimeError(f"Bybit API error: {data}")
 
-        klines = data["result"]["list"]
+        klines = data.get("result", {}).get("list", [])
         if not klines:
             break
 
@@ -148,6 +170,35 @@ def validate_klines(
     return df, report
 
 
+def compute_freshness(df: pd.DataFrame) -> dict:
+    if df.empty:
+        raise RuntimeError("cannot compute freshness for empty dataframe")
+
+    now_utc = pd.Timestamp.now(tz="UTC")
+    last_open_utc = pd.to_datetime(df["timestamp"].max(), utc=True)
+    age = now_utc - last_open_utc
+
+    return {
+        "now_utc": now_utc,
+        "last_open_utc": last_open_utc,
+        "age": age,
+    }
+
+
+def assert_fresh_enough(df: pd.DataFrame, interval_minutes: int, *, multiplier: int = 2) -> dict:
+    freshness = compute_freshness(df)
+    max_age = pd.Timedelta(minutes=interval_minutes * multiplier)
+
+    if freshness["age"] > max_age:
+        raise RuntimeError(
+            "stale_market_data: "
+            f"last_open={freshness['last_open_utc']} age={freshness['age']} max_allowed={max_age}"
+        )
+
+    freshness["max_allowed_age"] = max_age
+    return freshness
+
+
 def print_validation_report(report: dict) -> None:
     print()
     print(f"=== Validation report: {report['symbol']} {report['interval']}m ===")
@@ -164,32 +215,42 @@ def print_freshness_report(df: pd.DataFrame, symbol: str, interval: str) -> None
         print("No data returned.")
         return
 
-    now_utc = pd.Timestamp.now(tz="UTC")
-    last_open_utc = df["timestamp"].max()
-    age = now_utc - last_open_utc
+    freshness = compute_freshness(df)
 
     print()
     print(f"=== Freshness report: {symbol} {interval}m ===")
-    print(f"Now UTC           : {now_utc}")
-    print(f"Last candle open  : {last_open_utc}")
-    print(f"Last candle MSK   : {last_open_utc.tz_convert('Europe/Moscow')}")
-    print(f"Age               : {age}")
+    print(f"Now UTC           : {freshness['now_utc']}")
+    print(f"Last candle open  : {freshness['last_open_utc']}")
+    print(f"Last candle MSK   : {freshness['last_open_utc'].tz_convert('Europe/Moscow')}")
+    print(f"Age               : {freshness['age']}")
 
 
-def save_data(df: pd.DataFrame, filename: str) -> Path:
+def save_data(df: pd.DataFrame, output_path: Path) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = DATA_DIR / filename
     df.to_csv(output_path, index=False)
     print(f"Saved: {output_path}")
     return output_path
 
 
-def download_and_save(symbol: str, interval: str, total: int, category: str):
+def download_and_save(
+    symbol: str,
+    interval: str,
+    total: int,
+    category: str,
+    *,
+    settings: AppSettings | None = None,
+):
+    if settings is None:
+        settings = load_settings()
+
+    base_url = resolve_market_base_url(settings)
+
     raw_df = get_klines_full(
         symbol=symbol,
         interval=interval,
         total=total,
         category=category,
+        base_url=base_url,
     )
 
     clean_df, report = validate_klines(
@@ -199,20 +260,21 @@ def download_and_save(symbol: str, interval: str, total: int, category: str):
         interval=interval,
     )
 
-    filename = f"{symbol.lower()}_{interval}m.csv"
-
     print(f"\n=== {symbol} {interval}m tail ===")
     print(clean_df[["timestamp_msk", "open", "high", "low", "close"]].tail())
 
     print_validation_report(report)
     print_freshness_report(clean_df, symbol=symbol, interval=interval)
+    assert_fresh_enough(clean_df, interval_minutes=int(interval), multiplier=2)
 
-    output_path = save_data(clean_df, filename)
+    output_path = get_data_path(symbol=symbol, interval=interval)
+    save_data(clean_df, output_path)
     return clean_df, report, output_path
 
 
-def refresh_project_market_data():
-    settings = load_settings()
+def refresh_project_market_data(settings: AppSettings | None = None):
+    if settings is None:
+        settings = load_settings()
 
     results = []
 
@@ -222,6 +284,7 @@ def refresh_project_market_data():
             interval=settings.data.interval_main,
             total=settings.data.bars_15m,
             category=settings.data.category,
+            settings=settings,
         )
     )
 
@@ -231,6 +294,7 @@ def refresh_project_market_data():
             interval=settings.data.interval_htf,
             total=settings.data.bars_30m,
             category=settings.data.category,
+            settings=settings,
         )
     )
 
@@ -257,14 +321,16 @@ def main():
     print(f"BASE_DIR: {BASE_DIR}")
     print(f"DATA_DIR: {DATA_DIR}")
 
+    settings = load_settings()
+    print(f"market_data_endpoint: {resolve_market_base_url(settings)}")
+    print(f"execution_testnet: {settings.execution.testnet}")
+
     if args.use_settings or (args.interval is None and args.total is None):
-        refresh_project_market_data()
+        refresh_project_market_data(settings)
         return
 
     if args.interval is None or args.total is None:
         raise ValueError("For manual mode you must provide both --interval and --total")
-
-    settings = load_settings()
 
     symbol = args.symbol or settings.data.symbol
     category = args.category or settings.data.category
@@ -274,6 +340,7 @@ def main():
         interval=args.interval,
         total=args.total,
         category=category,
+        settings=settings,
     )
 
 

@@ -4,9 +4,8 @@
     for lookback in [10]:
         for body in [0.7]:
             for hold in [2, 4]:
-                for trend in [True]:
-                    for vol in [True]:
-
+                for trend in [False, True]:
+                    for vol in [False, True]:
                         candidates.append({
                             "family": "breakout",
                             "breakout_lookback": lookback,
@@ -40,12 +39,18 @@ def apply_breakout(df, c):
 
     if c["direction"] == "long":
         entry = (df["close_15m"] > prev_high) & body_ok
-        entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
+
+        if c["use_trend_filter"]:
+            entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
+
     else:
         entry = (df["close_15m"] < prev_low) & body_ok
-        entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
 
-    entry &= df["regime_high_vol"] == 1
+        if c["use_trend_filter"]:
+            entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
+
+    if c["use_vol_filter"]:
+        entry &= df["regime_high_vol"] == 1
 
     df["entry_signal"] = entry.fillna(False).astype(int)
     return df

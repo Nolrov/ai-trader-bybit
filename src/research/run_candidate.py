@@ -1,12 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
-import sys
+from __future__ import annotations
+
 import argparse
 import json
+import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
+from config.settings import load_settings
 from data.bybit_loader import download_and_save
 from processing.data_processor import process
 from research.rule_builder import build_rule_candidates
@@ -18,35 +21,50 @@ REPORTS_DIR = BASE_DIR / "reports"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run one candidate from alpha miner candidate list")
+    parser = argparse.ArgumentParser(
+        description="Run one candidate from alpha miner candidate list"
+    )
     parser.add_argument(
         "--candidate-id",
         type=int,
         required=True,
-        help="Candidate ID from alpha_miner enumeration (starts from 1)"
+        help="Candidate ID from alpha miner enumeration (starts from 1)",
     )
     parser.add_argument(
         "--save-report",
         action="store_true",
-        help="Save one-candidate JSON report to reports/"
+        help="Save one-candidate JSON report to reports/",
     )
     parser.add_argument(
         "--refresh-data",
         action="store_true",
-        help="Refresh BTCUSDT 15m/30m candles from Bybit before processing"
+        help="Refresh market data from Bybit using project settings before processing",
     )
     return parser.parse_args()
 
 
-def refresh_market_data():
-    print("Refreshing market data from Bybit...")
-    download_and_save(symbol="BTCUSDT", interval="15", total=2000, category="linear")
-    download_and_save(symbol="BTCUSDT", interval="30", total=2000, category="linear")
+def refresh_market_data(settings) -> None:
+    print("Refreshing market data from Bybit using project settings...")
+
+    download_and_save(
+        symbol=settings.data.symbol,
+        interval=settings.data.interval_main,
+        total=settings.data.bars_15m,
+        category=settings.data.category,
+    )
+
+    download_and_save(
+        symbol=settings.data.symbol,
+        interval=settings.data.interval_htf,
+        total=settings.data.bars_30m,
+        category=settings.data.category,
+    )
+
     print("Market data refreshed.")
     print()
 
 
-def build_description(candidate):
+def build_description(candidate: dict) -> str:
     family = candidate["family"]
 
     if family == "breakout":
@@ -90,7 +108,7 @@ def build_description(candidate):
     return str(candidate)
 
 
-def is_stable_candidate(train_m, test_m):
+def is_stable_candidate(train_m: dict, test_m: dict) -> bool:
     return (
         test_m["total_return_pct"] > -5
         and test_m["trades"] > 10
@@ -100,9 +118,10 @@ def is_stable_candidate(train_m, test_m):
 
 def main():
     args = parse_args()
+    settings = load_settings()
 
     if args.refresh_data:
-        refresh_market_data()
+        refresh_market_data(settings)
 
     df = process()
     df = prepare_pa_features(df)
@@ -135,11 +154,16 @@ def main():
     print("=" * 88)
     print(f"candidate_id        : {args.candidate_id}")
     print(f"description         : {description}")
+    print(f"symbol              : {settings.data.symbol}")
+    print(f"interval_main       : {settings.data.interval_main}")
+    print(f"interval_htf        : {settings.data.interval_htf}")
+    print(f"bars_15m            : {settings.data.bars_15m}")
+    print(f"bars_30m            : {settings.data.bars_30m}")
     print(f"rows_total          : {len(df)}")
     print(f"rows_train          : {len(train_df)}")
     print(f"rows_test           : {len(test_df)}")
 
-    if "timestamp" in train_df.columns:
+    if "timestamp" in train_df.columns and len(train_df) > 0 and len(test_df) > 0:
         print(f"train_start         : {train_df['timestamp'].iloc[0]}")
         print(f"train_end           : {train_df['timestamp'].iloc[-1]}")
         print(f"test_start          : {test_df['timestamp'].iloc[0]}")
@@ -172,6 +196,11 @@ def main():
         payload = {
             "candidate_id": args.candidate_id,
             "description": description,
+            "symbol": settings.data.symbol,
+            "interval_main": settings.data.interval_main,
+            "interval_htf": settings.data.interval_htf,
+            "bars_15m": settings.data.bars_15m,
+            "bars_30m": settings.data.bars_30m,
             "candidate": candidate,
             "train_metrics": train_m,
             "test_metrics": test_m,

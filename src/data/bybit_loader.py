@@ -1,25 +1,40 @@
-﻿import argparse
+﻿from __future__ import annotations
+
+import argparse
+import sys
 import time
 from pathlib import Path
 
 import pandas as pd
 import requests
 
+
 BASE_URL = "https://api.bybit.com"
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
+SRC_DIR = BASE_DIR / "src"
+
+if str(SRC_DIR) not in sys.path:
+    sys.path.append(str(SRC_DIR))
+
+from config.settings import load_settings  # noqa: E402
 
 
-def get_klines_full(symbol="BTCUSDT", interval="15", total=2000, category="linear"):
-    all_data = []
+def get_klines_full(symbol: str, interval: str, total: int, category: str) -> pd.DataFrame:
+    if total <= 0:
+        raise ValueError(f"total must be > 0, got {total}")
+
+    all_data: list[list] = []
     end = None
 
     while len(all_data) < total:
+        limit = min(200, total - len(all_data))
+
         params = {
             "category": category,
             "symbol": symbol,
             "interval": interval,
-            "limit": 200,
+            "limit": limit,
         }
         if end is not None:
             params["end"] = end
@@ -27,12 +42,12 @@ def get_klines_full(symbol="BTCUSDT", interval="15", total=2000, category="linea
         response = requests.get(
             f"{BASE_URL}/v5/market/kline",
             params=params,
-            timeout=10,
+            timeout=15,
         )
         response.raise_for_status()
         data = response.json()
 
-        if data["retCode"] != 0:
+        if data.get("retCode") != 0:
             raise RuntimeError(f"Bybit API error: {data}")
 
         klines = data["result"]["list"]
@@ -44,6 +59,11 @@ def get_klines_full(symbol="BTCUSDT", interval="15", total=2000, category="linea
         time.sleep(0.1)
 
     all_data = all_data[:total]
+
+    if not all_data:
+        raise RuntimeError(
+            f"No kline data returned for symbol={symbol}, interval={interval}, category={category}"
+        )
 
     df = pd.DataFrame(
         all_data,
@@ -76,7 +96,12 @@ def get_klines_full(symbol="BTCUSDT", interval="15", total=2000, category="linea
     return df
 
 
-def validate_klines(df, interval_minutes, symbol="BTCUSDT", interval="15"):
+def validate_klines(
+    df: pd.DataFrame,
+    interval_minutes: int,
+    symbol: str,
+    interval: str,
+) -> tuple[pd.DataFrame, dict]:
     report = {
         "symbol": symbol,
         "interval": interval,
@@ -123,7 +148,7 @@ def validate_klines(df, interval_minutes, symbol="BTCUSDT", interval="15"):
     return df, report
 
 
-def print_validation_report(report):
+def print_validation_report(report: dict) -> None:
     print()
     print(f"=== Validation report: {report['symbol']} {report['interval']}m ===")
     print(f"Rows before: {report['rows_before']}")
@@ -134,7 +159,7 @@ def print_validation_report(report):
     print(f"Rows after: {report['rows_after']}")
 
 
-def print_freshness_report(df, symbol="BTCUSDT", interval="15"):
+def print_freshness_report(df: pd.DataFrame, symbol: str, interval: str) -> None:
     if df.empty:
         print("No data returned.")
         return
@@ -151,7 +176,7 @@ def print_freshness_report(df, symbol="BTCUSDT", interval="15"):
     print(f"Age               : {age}")
 
 
-def save_data(df, filename):
+def save_data(df: pd.DataFrame, filename: str) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     output_path = DATA_DIR / filename
     df.to_csv(output_path, index=False)
@@ -159,7 +184,7 @@ def save_data(df, filename):
     return output_path
 
 
-def download_and_save(symbol="BTCUSDT", interval="15", total=2000, category="linear"):
+def download_and_save(symbol: str, interval: str, total: int, category: str):
     raw_df = get_klines_full(
         symbol=symbol,
         interval=interval,
@@ -186,12 +211,43 @@ def download_and_save(symbol="BTCUSDT", interval="15", total=2000, category="lin
     return clean_df, report, output_path
 
 
+def refresh_project_market_data():
+    settings = load_settings()
+
+    results = []
+
+    results.append(
+        download_and_save(
+            symbol=settings.data.symbol,
+            interval=settings.data.interval_main,
+            total=settings.data.bars_15m,
+            category=settings.data.category,
+        )
+    )
+
+    results.append(
+        download_and_save(
+            symbol=settings.data.symbol,
+            interval=settings.data.interval_htf,
+            total=settings.data.bars_30m,
+            category=settings.data.category,
+        )
+    )
+
+    return results
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Download Bybit kline data to project data/ folder")
-    parser.add_argument("--symbol", type=str, default="BTCUSDT")
-    parser.add_argument("--intervals", nargs="+", default=["15", "30"])
-    parser.add_argument("--total", type=int, default=2000)
-    parser.add_argument("--category", type=str, default="linear")
+    parser.add_argument("--symbol", type=str, default=None)
+    parser.add_argument("--category", type=str, default=None)
+    parser.add_argument("--interval", type=str, default=None, help="Single interval to download, e.g. 15 or 30")
+    parser.add_argument("--total", type=int, default=None, help="Bars to download for --interval")
+    parser.add_argument(
+        "--use-settings",
+        action="store_true",
+        help="Use settings.py as the source of truth for symbol, intervals and bar counts",
+    )
     return parser.parse_args()
 
 
@@ -201,13 +257,24 @@ def main():
     print(f"BASE_DIR: {BASE_DIR}")
     print(f"DATA_DIR: {DATA_DIR}")
 
-    for interval in args.intervals:
-        download_and_save(
-            symbol=args.symbol,
-            interval=interval,
-            total=args.total,
-            category=args.category,
-        )
+    if args.use_settings or (args.interval is None and args.total is None):
+        refresh_project_market_data()
+        return
+
+    if args.interval is None or args.total is None:
+        raise ValueError("For manual mode you must provide both --interval and --total")
+
+    settings = load_settings()
+
+    symbol = args.symbol or settings.data.symbol
+    category = args.category or settings.data.category
+
+    download_and_save(
+        symbol=symbol,
+        interval=args.interval,
+        total=args.total,
+        category=category,
+    )
 
 
 if __name__ == "__main__":

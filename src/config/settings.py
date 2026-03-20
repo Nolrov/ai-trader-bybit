@@ -22,6 +22,10 @@ def _get_float(name: str, default: float):
     return float(_get(name, default))
 
 
+def _get_bool(name: str, default: bool):
+    return str(_get(name, str(default))).lower() in ("1", "true", "yes")
+
+
 @dataclass
 class DataSettings:
     symbol: str = "BTCUSDT"
@@ -82,9 +86,17 @@ def load_settings() -> AppSettings:
         strategy=StrategySettings(
             candidate_id=_get_int("AI_TRADER_CANDIDATE_ID", 39),
         ),
-        risk=RiskSettings(),
+        risk=RiskSettings(
+            max_position_usdt=_get_float("AI_TRADER_MAX_POSITION_USDT", 50.0),
+            max_daily_loss_pct=_get_float("AI_TRADER_MAX_DAILY_LOSS_PCT", 2.0),
+            max_consecutive_losses=_get_int("AI_TRADER_MAX_CONSECUTIVE_LOSSES", 3),
+            allow_long=_get_bool("AI_TRADER_ALLOW_LONG", True),
+            allow_short=_get_bool("AI_TRADER_ALLOW_SHORT", False),
+            one_position_only=_get_bool("AI_TRADER_ONE_POSITION_ONLY", True),
+        ),
         execution=ExecutionSettings(
             mode=_get("AI_TRADER_MODE", "paper"),
+            testnet=_get_bool("AI_TRADER_TESTNET", True),
             api_key=_get("BYBIT_API_KEY", ""),
             api_secret=_get("BYBIT_API_SECRET", ""),
         ),

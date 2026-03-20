@@ -69,6 +69,30 @@ class BybitExecutor:
         self._instrument_cache[cache_key] = instrument
         return instrument
 
+    def get_last_price(self, symbol: str, category: str = "linear") -> float:
+        url = f"{self.base_url}/v5/market/tickers"
+        params = {
+            "category": category,
+            "symbol": symbol,
+        }
+
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("retCode") != 0:
+            raise RuntimeError(f"Bybit tickers error: {data}")
+
+        items = data.get("result", {}).get("list", [])
+        if not items:
+            raise RuntimeError(f"Ticker not found for symbol={symbol}, category={category}")
+
+        last_price = self._safe_float(items[0].get("lastPrice"), 0.0)
+        if last_price <= 0:
+            raise RuntimeError(f"Invalid last price for symbol={symbol}, category={category}")
+
+        return last_price
+
     def _normalize_qty(
         self,
         qty: float,
@@ -108,6 +132,42 @@ class BybitExecutor:
 
         return normalized_qty, None, instrument
 
+    def _normalize_price(
+        self,
+        price: float,
+        symbol: str,
+        category: str,
+    ) -> tuple[float, str | None, dict[str, Any] | None]:
+        instrument = self._get_instrument_info(symbol=symbol, category=category)
+        price_filter = instrument.get("priceFilter", {})
+
+        tick_size = self._safe_float(price_filter.get("tickSize"), 0.0)
+        min_price = self._safe_float(price_filter.get("minPrice"), 0.0)
+        max_price = self._safe_float(price_filter.get("maxPrice"), 0.0)
+
+        if price <= 0:
+            return 0.0, "invalid_price", instrument
+
+        normalized_price = price
+
+        if tick_size > 0:
+            normalized_price = math.floor(price / tick_size) * tick_size
+            decimals = self._decimals_from_step(tick_size)
+            normalized_price = round(normalized_price, decimals)
+        else:
+            normalized_price = round(normalized_price, 8)
+
+        if normalized_price <= 0:
+            return 0.0, "price_below_tick_after_normalization", instrument
+
+        if min_price > 0 and normalized_price < min_price:
+            return normalized_price, f"price_below_min_price: min={min_price}", instrument
+
+        if max_price > 0 and normalized_price > max_price:
+            return normalized_price, f"price_above_max_price: max={max_price}", instrument
+
+        return normalized_price, None, instrument
+
     def place_order(
         self,
         symbol: str,
@@ -117,9 +177,10 @@ class BybitExecutor:
         category: str = "linear",
         order_type: str = "Market",
         reduce_only: bool = False,
+        limit_price: float | None = None,
     ) -> ExecutionResult:
         try:
-            normalized_qty, validation_error, instrument = self._normalize_qty(
+            normalized_qty, qty_error, instrument = self._normalize_qty(
                 qty=qty,
                 price=price,
                 symbol=symbol,
@@ -137,7 +198,7 @@ class BybitExecutor:
                 raw=None,
             )
 
-        if validation_error is not None:
+        if qty_error is not None:
             return ExecutionResult(
                 ok=False,
                 mode=self.settings.mode,
@@ -145,11 +206,67 @@ class BybitExecutor:
                 qty=normalized_qty,
                 symbol=symbol,
                 order_type=order_type,
-                message=validation_error,
+                message=qty_error,
                 raw={"instrument": instrument},
             )
 
+        normalized_limit_price = None
+        if order_type == "Limit":
+            if limit_price is None:
+                return ExecutionResult(
+                    ok=False,
+                    mode=self.settings.mode,
+                    side=side,
+                    qty=normalized_qty,
+                    symbol=symbol,
+                    order_type=order_type,
+                    message="missing_limit_price",
+                    raw=None,
+                )
+
+            try:
+                normalized_limit_price, price_error, instrument = self._normalize_price(
+                    price=limit_price,
+                    symbol=symbol,
+                    category=category,
+                )
+            except Exception as exc:
+                return ExecutionResult(
+                    ok=False,
+                    mode=self.settings.mode,
+                    side=side,
+                    qty=normalized_qty,
+                    symbol=symbol,
+                    order_type=order_type,
+                    message=f"instrument_info_error: {exc}",
+                    raw=None,
+                )
+
+            if price_error is not None:
+                return ExecutionResult(
+                    ok=False,
+                    mode=self.settings.mode,
+                    side=side,
+                    qty=normalized_qty,
+                    symbol=symbol,
+                    order_type=order_type,
+                    message=price_error,
+                    raw={"instrument": instrument},
+                )
+
         if self.settings.mode == "paper":
+            raw_payload = {
+                "symbol": symbol,
+                "side": side,
+                "qty": normalized_qty,
+                "category": category,
+                "orderType": order_type,
+                "reduceOnly": reduce_only,
+                "price_reference": price,
+            }
+            if normalized_limit_price is not None:
+                raw_payload["price"] = normalized_limit_price
+
             return ExecutionResult(
                 ok=True,
                 mode="paper",
@@ -158,15 +275,7 @@ class BybitExecutor:
                 symbol=symbol,
                 order_type=order_type,
                 message="paper_order_emitted",
-                raw={
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": normalized_qty,
-                    "category": category,
-                    "orderType": order_type,
-                    "reduceOnly": reduce_only,
-                    "price_reference": price,
-                },
+                raw=raw_payload,
             )
 
         if not self.settings.api_key or not self.settings.api_secret:
@@ -193,6 +302,9 @@ class BybitExecutor:
             "timeInForce": "GTC",
             "reduceOnly": reduce_only,
         }
+
+        if normalized_limit_price is not None:
+            payload["price"] = str(normalized_limit_price)
 
         timestamp = str(int(time.time() * 1000))
         recv_window = "5000"

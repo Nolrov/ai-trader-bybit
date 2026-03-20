@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -87,6 +88,64 @@ def build_signal_snapshot(settings) -> dict:
     }
 
 
+def apply_fill_to_state(
+    state: dict,
+    previous_position: int,
+    new_target_position: int,
+    fill_price: float,
+    fill_qty: float,
+    signal_ts: str,
+    execution_mode: str,
+    order_side: str,
+) -> dict:
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if previous_position == 0 and new_target_position != 0:
+        state["current_position"] = new_target_position
+        state["position_qty"] = fill_qty
+        state["entry_price"] = fill_price
+        state["entry_time"] = signal_ts
+
+    elif previous_position != 0 and new_target_position == 0:
+        entry_price = state.get("entry_price")
+        entry_qty = float(state.get("position_qty", 0.0))
+
+        if entry_price is not None and entry_qty > 0:
+            entry_price = float(entry_price)
+
+            if previous_position > 0:
+                pnl_pct = ((fill_price / entry_price) - 1.0) * 100.0
+            else:
+                pnl_pct = ((entry_price / fill_price) - 1.0) * 100.0
+
+            state["daily_pnl_pct"] = float(state.get("daily_pnl_pct", 0.0)) + pnl_pct
+            state["realized_pnl_pct_total"] = float(state.get("realized_pnl_pct_total", 0.0)) + pnl_pct
+
+            if pnl_pct < 0:
+                state["consecutive_losses"] = int(state.get("consecutive_losses", 0)) + 1
+            else:
+                state["consecutive_losses"] = 0
+
+        state["current_position"] = 0
+        state["position_qty"] = 0.0
+        state["entry_price"] = None
+        state["entry_time"] = None
+
+    state["last_signal_timestamp"] = signal_ts
+    state["last_decision_timestamp"] = now_iso
+    state["last_order"] = {
+        "side": order_side,
+        "qty": fill_qty,
+        "target_position": new_target_position,
+        "price_reference": fill_price,
+        "signal_timestamp": signal_ts,
+        "mode": execution_mode,
+        "updated_at": now_iso,
+    }
+
+    return state
+
+
 def run_cycle(settings, args):
     state_store = StateStore(settings.runtime.state_file)
     state = state_store.load()
@@ -105,6 +164,10 @@ def run_cycle(settings, args):
     print(f"desired_position: {snap['desired_position']}")
     print(f"signals_last_100_bars: {snap['signals_last_100_bars']}")
     print(f"current_position: {state.get('current_position', 0)}")
+    print(f"position_qty: {state.get('position_qty', 0.0)}")
+    print(f"entry_price: {state.get('entry_price')}")
+    print(f"daily_pnl_pct: {state.get('daily_pnl_pct', 0.0)}")
+    print(f"consecutive_losses: {state.get('consecutive_losses', 0)}")
     print("====================\n")
 
     signal_ts = snap["timestamp"]
@@ -113,16 +176,19 @@ def run_cycle(settings, args):
         print("SKIP: already processed this signal\n")
         return
 
-    risk = RiskManager(settings.risk)
+    previous_position = int(state.get("current_position", 0))
 
+    risk = RiskManager(settings.risk)
     decision = risk.evaluate(
         desired_position=snap["desired_position"],
-        current_position=int(state.get("current_position", 0)),
+        current_position=previous_position,
         price=snap["price"],
         state=state,
     )
 
     print("RISK DECISION:", decision)
+
+    state["last_decision_timestamp"] = datetime.now(timezone.utc).isoformat()
 
     if not decision.approved:
         state["last_signal_timestamp"] = signal_ts
@@ -130,30 +196,42 @@ def run_cycle(settings, args):
         return
 
     executor = BybitExecutor(settings.execution)
-
     result = executor.place_order(
         symbol=settings.data.symbol,
         side=decision.order_side,
         qty=decision.order_qty,
         category=settings.data.category,
+        reduce_only=decision.reduce_only,
     )
 
     print("EXEC RESULT:", result)
 
-    if result.ok:
-        state["current_position"] = decision.target_position
+    if not result.ok:
+        print("ORDER FAILED")
         state["last_signal_timestamp"] = signal_ts
         state["last_order"] = {
-            "symbol": settings.data.symbol,
             "side": decision.order_side,
             "qty": decision.order_qty,
             "target_position": decision.target_position,
             "price_reference": snap["price"],
             "signal_timestamp": signal_ts,
             "mode": settings.execution.mode,
+            "error": result.message,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-    else:
-        print("ORDER FAILED")
+        state_store.save(state)
+        return
+
+    state = apply_fill_to_state(
+        state=state,
+        previous_position=previous_position,
+        new_target_position=decision.target_position,
+        fill_price=snap["price"],
+        fill_qty=decision.order_qty,
+        signal_ts=signal_ts,
+        execution_mode=settings.execution.mode,
+        order_side=decision.order_side,
+    )
 
     state_store.save(state)
 

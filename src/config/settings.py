@@ -46,6 +46,7 @@ class RiskSettings:
     max_consecutive_losses: int = 3
     allow_long: bool = True
     allow_short: bool = False
+    one_position_only: bool = True
 
 
 @dataclass

@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 
 DEFAULT_STATE = {
-    "current_position": 0,
+    "current_position": 0,          # -1 short, 0 flat, 1 long
     "position_qty": 0.0,
     "entry_price": None,
     "entry_time": None,

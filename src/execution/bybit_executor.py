@@ -27,6 +27,10 @@ class BybitExecutor:
         self.settings = settings
         self.base_url = "https://api-testnet.bybit.com" if settings.testnet else "https://api.bybit.com"
 
+    @staticmethod
+    def _round_qty(qty: float) -> float:
+        return round(max(qty, 0.0), 6)
+
     def place_order(
         self,
         symbol: str,
@@ -36,6 +40,20 @@ class BybitExecutor:
         order_type: str = "Market",
         reduce_only: bool = False,
     ) -> ExecutionResult:
+        qty = self._round_qty(qty)
+
+        if qty <= 0:
+            return ExecutionResult(
+                ok=False,
+                mode=self.settings.mode,
+                side=side,
+                qty=qty,
+                symbol=symbol,
+                order_type=order_type,
+                message="invalid_qty",
+                raw=None,
+            )
+
         if self.settings.mode == "paper":
             return ExecutionResult(
                 ok=True,
@@ -76,12 +94,12 @@ class BybitExecutor:
             "side": side,
             "orderType": order_type,
             "qty": str(qty),
-            "timeInForce": self.settings.time_in_force,
+            "timeInForce": "GTC",
             "reduceOnly": reduce_only,
         }
 
         timestamp = str(int(time.time() * 1000))
-        recv_window = self.settings.recv_window
+        recv_window = "5000"
         body = json.dumps(payload, separators=(",", ":"))
 
         sign_payload = f"{timestamp}{self.settings.api_key}{recv_window}{body}"

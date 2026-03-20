@@ -1,9 +1,9 @@
 ﻿def get_mean_reversion_candidates():
     candidates = []
 
-    for z in [1.5, 2.0]:
+    for z in [1.25, 1.5]:
         for hold in [2, 4]:
-            for trend in [True, False]:
+            for trend in [False]:
 
                 candidates.append({
                     "family": "mean_reversion",
@@ -34,11 +34,7 @@ def apply_mean_reversion(df, c):
     else:
         entry = z >= c["zscore_threshold"]
 
-    if c["use_trend_filter"]:
-        if c["direction"] == "long":
-            entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
-        else:
-            entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
+    entry &= df["regime_flat"] == 1
 
     df["entry_signal"] = entry.fillna(False).astype(int)
     return df

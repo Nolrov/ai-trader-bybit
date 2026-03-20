@@ -75,8 +75,16 @@ def build_description(candidate):
             f"{candidate['direction']} | "
             f"pullback>={candidate['pullback_threshold']} | "
             f"hold={candidate['hold_bars']} | "
-            f"trend={candidate['use_trend_filter']} | "
             f"vol={candidate['use_vol_filter']}"
+        )
+
+    if family == "atr_breakout":
+        return (
+            f"{candidate['family']} | "
+            f"{candidate['direction']} | "
+            f"atr_mult={candidate['atr_mult']} | "
+            f"hold={candidate['hold_bars']} | "
+            f"trend={candidate['use_trend_filter']}"
         )
 
     return str(candidate)

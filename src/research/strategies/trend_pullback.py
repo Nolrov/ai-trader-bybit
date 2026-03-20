@@ -1,9 +1,9 @@
 ﻿def get_trend_pullback_candidates():
     candidates = []
 
-    for pullback in [0.003, 0.005, 0.008]:
-        for hold in [2, 4, 8]:
-            for vol in [True, False]:
+    for pullback in [0.0025, 0.003, 0.005]:
+        for hold in [2, 4]:
+            for vol in [False, True]:
 
                 candidates.append({
                     "family": "trend_pullback",
@@ -41,10 +41,11 @@ def apply_trend_pullback(df, c):
             & (df["ema_gap_15m"] >= pullback)
             & df["bearish_15m"]
         )
+    
+    entry &= df["regime_trend"] == 1
 
     if c["use_vol_filter"]:
-        vol_threshold = df["volatility_15m"].rolling(50).median()
-        entry &= df["volatility_15m"] > vol_threshold
+        entry &= df["regime_high_vol"] == 1
 
     df["entry_signal"] = entry.fillna(False).astype(int)
     return df

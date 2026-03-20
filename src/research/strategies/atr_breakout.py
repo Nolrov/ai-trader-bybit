@@ -20,9 +20,9 @@ def compute_atr(df, period=14):
 def get_atr_breakout_candidates():
     candidates = []
 
-    for atr_mult in [1.0, 1.5, 2.0]:
-        for hold in [2, 4, 8]:
-            for trend in [True, False]:
+    for atr_mult in [1.0, 1.5]:
+        for hold in [2, 4]:
+            for trend in [True]:
 
                 candidates.append({
                     "family": "atr_breakout",
@@ -55,12 +55,12 @@ def apply_atr_breakout(df, c):
 
     if c["direction"] == "long":
         entry = df["close_15m"] > upper
-        if c["use_trend_filter"]:
-            entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
+        entry &= df["ema_fast_30m"] > df["ema_slow_30m"]
     else:
         entry = df["close_15m"] < lower
-        if c["use_trend_filter"]:
-            entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
+        entry &= df["ema_fast_30m"] < df["ema_slow_30m"]
+
+    entry &= df["regime_high_vol"] == 1
 
     df["entry_signal"] = entry.fillna(False).astype(int)
     return df

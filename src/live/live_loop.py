@@ -200,6 +200,7 @@ def run_cycle(settings, args):
         symbol=settings.data.symbol,
         side=decision.order_side,
         qty=decision.order_qty,
+        price=snap["price"],
         category=settings.data.category,
         reduce_only=decision.reduce_only,
     )

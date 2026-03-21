@@ -255,6 +255,50 @@ def run_cycle(settings, args):
         return
 
     snap = build_signal_snapshot(settings)
+    signal_ts = snap["timestamp"]
+
+    exchange_snapshot = state.get("exchange_position_snapshot") or {}
+    exchange_pos = int(exchange_snapshot.get("current_position", 0) or 0)
+    exchange_qty = float(exchange_snapshot.get("position_qty", 0.0) or 0.0)
+
+    if exchange_pos != 0 and exchange_qty > 0:
+        desired = int(snap["desired_position"])
+
+        if exchange_pos != desired:
+            print(
+                f"WARNING position_mismatch_detected "
+                f"exchange_position={exchange_pos} desired_position={desired} "
+                f"qty={exchange_qty} action=force_close signal_ts={signal_ts}"
+            )
+
+            executor = BybitExecutor(settings.execution)
+            close_side = "Sell" if exchange_pos > 0 else "Buy"
+
+            result = executor.place_order(
+                symbol=settings.data.symbol,
+                side=close_side,
+                qty=abs(exchange_qty),
+                price=snap["price"],
+                category=settings.data.category,
+                reduce_only=True,
+            )
+
+            print("FORCED CLOSE RESULT:", result)
+
+            state["last_signal_timestamp"] = signal_ts
+            state["last_decision_timestamp"] = datetime.now(timezone.utc).isoformat()
+            state["last_order"] = {
+                "mode": settings.execution.mode,
+                "signal_timestamp": signal_ts,
+                "action": "forced_close",
+                "reason": "position_mismatch_detected",
+                "exchange_position": exchange_pos,
+                "desired_position": desired,
+                "qty": abs(exchange_qty),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            state_store.save(state)
+            return
 
     print("=== SIGNAL DEBUG ===")
     print(f"symbol: {settings.data.symbol}")
@@ -276,8 +320,6 @@ def run_cycle(settings, args):
     print(f"external_position_detected: {state.get('external_position_detected')}")
     print("====================")
     print()
-
-    signal_ts = snap["timestamp"]
 
     if state.get("last_signal_timestamp") == signal_ts:
         print("SKIP: already processed this signal")

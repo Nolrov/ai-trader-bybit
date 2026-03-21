@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -51,6 +51,8 @@ class RiskSettings:
     allow_long: bool = True
     allow_short: bool = False
     one_position_only: bool = True
+    take_profit_pct: float = 0.01
+    stop_loss_pct: float = 0.005
 
 
 @dataclass
@@ -93,6 +95,8 @@ def load_settings() -> AppSettings:
             allow_long=_get_bool("AI_TRADER_ALLOW_LONG", True),
             allow_short=_get_bool("AI_TRADER_ALLOW_SHORT", False),
             one_position_only=_get_bool("AI_TRADER_ONE_POSITION_ONLY", True),
+            take_profit_pct=_get_float("AI_TRADER_TAKE_PROFIT_PCT", 0.01),
+            stop_loss_pct=_get_float("AI_TRADER_STOP_LOSS_PCT", 0.005),
         ),
         execution=ExecutionSettings(
             mode=_get("AI_TRADER_MODE", "paper"),

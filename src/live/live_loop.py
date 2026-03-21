@@ -3,7 +3,6 @@
 import argparse
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -76,6 +75,33 @@ def get_exchange_position_snapshot(state: dict) -> dict:
     if isinstance(snapshot, dict):
         return snapshot
     return {}
+
+
+def compute_protection_prices(settings, side: str, entry_price: float):
+    tp_pct = float(settings.risk.take_profit_pct)
+    sl_pct = float(settings.risk.stop_loss_pct)
+
+    if tp_pct <= 0 or sl_pct <= 0:
+        raise RuntimeError("invalid_tp_sl_settings")
+
+    if entry_price <= 0:
+        raise RuntimeError("invalid_entry_price_for_tp_sl")
+
+    normalized_side = str(side).strip().lower()
+
+    if normalized_side == "buy":
+        take_profit = entry_price * (1.0 + tp_pct)
+        stop_loss = entry_price * (1.0 - sl_pct)
+    elif normalized_side == "sell":
+        take_profit = entry_price * (1.0 - tp_pct)
+        stop_loss = entry_price * (1.0 + sl_pct)
+    else:
+        raise RuntimeError(f"unsupported_side_for_tp_sl: {side}")
+
+    if take_profit <= 0 or stop_loss <= 0:
+        raise RuntimeError("computed_nonpositive_tp_sl")
+
+    return float(take_profit), float(stop_loss)
 
 
 def reconcile_position(state: dict, snap: dict):
@@ -184,14 +210,28 @@ def run_cycle(settings):
     if not decision.approved:
         return
 
-    result = executor.place_order(
-        symbol=settings.data.symbol,
-        side=decision.order_side,
-        qty=decision.order_qty,
-        price=snap["price"],
-        category=settings.data.category,
-        reduce_only=decision.reduce_only,
-    )
+    place_order_kwargs = {
+        "symbol": settings.data.symbol,
+        "side": decision.order_side,
+        "qty": decision.order_qty,
+        "price": snap["price"],
+        "category": settings.data.category,
+        "reduce_only": decision.reduce_only,
+    }
+
+    is_open_order = (not decision.reduce_only) and int(decision.target_position) != 0
+
+    if is_open_order:
+        take_profit, stop_loss = compute_protection_prices(
+            settings=settings,
+            side=decision.order_side,
+            entry_price=snap["price"],
+        )
+        place_order_kwargs["take_profit"] = take_profit
+        place_order_kwargs["stop_loss"] = stop_loss
+        place_order_kwargs["require_tpsl_on_open"] = True
+
+    result = executor.place_order(**place_order_kwargs)
 
     print("=== EXEC RESULT ===")
     print(result)
@@ -208,6 +248,8 @@ def main():
     print(f"symbol={settings.data.symbol}")
     print(f"interval_main={settings.data.interval_main}")
     print(f"interval_htf={settings.data.interval_htf}")
+    print(f"take_profit_pct={settings.risk.take_profit_pct}")
+    print(f"stop_loss_pct={settings.risk.stop_loss_pct}")
 
     if args.once:
         run_cycle(settings)

@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
-from config.settings import AppSettings, load_settings
+from config.settings import AppSettings, LOGS_DIR, load_settings
 from data.bybit_loader import fetch_runtime_market_data
 from execution.bybit_executor import BybitExecutor
 from live.state_store import StateStore
@@ -17,6 +17,7 @@ from processing.data_processor import process_frames
 from research.alpha_miner import apply_candidate, prepare_pa_features
 from research.rule_builder import build_rule_candidates
 from risk.risk_manager import RiskManager
+from utils.runtime_logger import RuntimeLogger
 
 
 def parse_args():
@@ -136,7 +137,12 @@ def apply_fill_to_state(
     return state
 
 
-def sync_state_with_exchange(settings: AppSettings, state_store: StateStore, state: dict) -> tuple[dict, object]:
+def sync_state_with_exchange(
+    settings: AppSettings,
+    state_store: StateStore,
+    state: dict,
+    logger: RuntimeLogger,
+) -> tuple[dict, object]:
     executor = BybitExecutor(settings.execution)
     sync_result = executor.sync_exchange_state(
         symbol=settings.data.symbol,
@@ -151,17 +157,25 @@ def sync_state_with_exchange(settings: AppSettings, state_store: StateStore, sta
         sync_message=sync_result.message,
     )
 
-    print("=== EXCHANGE SYNC ===")
-    print(f"sync_ok: {sync_result.ok}")
-    print(f"sync_message: {sync_result.message}")
-    print(f"exchange_position: {sync_result.position}")
-    print(f"exchange_active_orders_count: {len(sync_result.active_orders)}")
-    print(f"bot_position_managed: {state.get('bot_position_managed')}")
-    print(f"external_position_detected: {state.get('external_position_detected')}")
-    print(f"exchange_managed_orders_count: {state.get('exchange_managed_orders_count', 0)}")
-    print(f"exchange_external_orders_count: {state.get('exchange_external_orders_count', 0)}")
-    print("=====================")
-    print()
+    logger.info(
+        f"exchange_sync sync_ok={sync_result.ok} "
+        f"message={sync_result.message} "
+        f"managed_orders={state.get('exchange_managed_orders_count', 0)} "
+        f"external_orders={state.get('exchange_external_orders_count', 0)}"
+    )
+    logger.event(
+        "exchange_sync",
+        {
+            "sync_ok": sync_result.ok,
+            "message": sync_result.message,
+            "exchange_position": sync_result.position,
+            "exchange_active_orders_count": len(sync_result.active_orders),
+            "bot_position_managed": state.get("bot_position_managed"),
+            "external_position_detected": state.get("external_position_detected"),
+            "exchange_managed_orders_count": state.get("exchange_managed_orders_count", 0),
+            "exchange_external_orders_count": state.get("exchange_external_orders_count", 0),
+        },
+    )
 
     return state, sync_result
 
@@ -226,9 +240,24 @@ def compute_protection_prices(settings: AppSettings, side: str, entry_price: flo
     return float(take_profit), float(stop_loss), None
 
 
-def mark_block(state: dict, state_store: StateStore, settings: AppSettings, signal_ts: str, reason: str) -> None:
+def mark_block(
+    state: dict,
+    state_store: StateStore,
+    settings: AppSettings,
+    signal_ts: str,
+    reason: str,
+    logger: RuntimeLogger,
+) -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
-    print(f"SAFE BLOCK: {reason}")
+    logger.warning(f"safe_block reason={reason} signal_ts={signal_ts}")
+    logger.event(
+        "safe_block",
+        {
+            "reason": reason,
+            "signal_timestamp": signal_ts,
+            "mode": settings.execution.mode,
+        },
+    )
     state["last_signal_timestamp"] = signal_ts
     state["last_decision_timestamp"] = now_iso
     state["last_order"] = {
@@ -241,21 +270,38 @@ def mark_block(state: dict, state_store: StateStore, settings: AppSettings, sign
     state_store.save(state)
 
 
-def run_cycle(settings, args):
+def run_cycle(settings, args, logger: RuntimeLogger):
     state_store = StateStore(settings.runtime.state_file)
     state = state_store.load()
     state = state_store.reset_daily_if_needed(state)
 
-    state, sync_result = sync_state_with_exchange(settings, state_store, state)
+    state, sync_result = sync_state_with_exchange(settings, state_store, state, logger)
     state_store.save(state)
 
     if not sync_result.ok:
-        print("SAFE BLOCK: exchange sync failed, trading aborted for this cycle")
-        print()
+        logger.warning("exchange sync failed, trading aborted for this cycle")
         return
 
     snap = build_signal_snapshot(settings)
     signal_ts = snap["timestamp"]
+
+    logger.info(
+        f"signal symbol={settings.data.symbol} time={signal_ts} "
+        f"price={snap['price']} entry_signal={snap['entry_signal']} "
+        f"desired_position={snap['desired_position']} signals_last_100={snap['signals_last_100_bars']}"
+    )
+    logger.event(
+        "signal_snapshot",
+        {
+            "symbol": settings.data.symbol,
+            "time": signal_ts,
+            "price": snap["price"],
+            "entry_signal": snap["entry_signal"],
+            "desired_position": snap["desired_position"],
+            "signals_last_100_bars": snap["signals_last_100_bars"],
+            "candidate_id": settings.strategy.candidate_id,
+        },
+    )
 
     exchange_snapshot = state.get("exchange_position_snapshot") or {}
     exchange_pos = int(exchange_snapshot.get("current_position", 0) or 0)
@@ -265,10 +311,10 @@ def run_cycle(settings, args):
         desired = int(snap["desired_position"])
 
         if exchange_pos != desired:
-            print(
-                f"WARNING position_mismatch_detected "
-                f"exchange_position={exchange_pos} desired_position={desired} "
-                f"qty={exchange_qty} action=force_close signal_ts={signal_ts}"
+            logger.warning(
+                f"position_mismatch_detected exchange_position={exchange_pos} "
+                f"desired_position={desired} qty={exchange_qty} action=force_close "
+                f"signal_ts={signal_ts}"
             )
 
             executor = BybitExecutor(settings.execution)
@@ -283,7 +329,18 @@ def run_cycle(settings, args):
                 reduce_only=True,
             )
 
-            print("FORCED CLOSE RESULT:", result)
+            logger.event(
+                "forced_close",
+                {
+                    "reason": "position_mismatch_detected",
+                    "exchange_position": exchange_pos,
+                    "desired_position": desired,
+                    "qty": abs(exchange_qty),
+                    "result_ok": result.ok,
+                    "result_message": result.message,
+                    "signal_timestamp": signal_ts,
+                },
+            )
 
             state["last_signal_timestamp"] = signal_ts
             state["last_decision_timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -300,35 +357,13 @@ def run_cycle(settings, args):
             state_store.save(state)
             return
 
-    print("=== SIGNAL DEBUG ===")
-    print(f"symbol: {settings.data.symbol}")
-    print(f"time: {snap['timestamp']}")
-    print(f"price: {snap['price']}")
-    print(f"entry_signal: {snap['entry_signal']}")
-    print(f"desired_position: {snap['desired_position']}")
-    print(f"signals_last_100_bars: {snap['signals_last_100_bars']}")
-    print(f"current_position: {state.get('current_position', 0)}")
-    print(f"position_qty: {state.get('position_qty', 0.0)}")
-    print(f"entry_price: {state.get('entry_price')}")
-    print(f"daily_pnl_pct: {state.get('daily_pnl_pct', 0.0)}")
-    print(f"consecutive_losses: {state.get('consecutive_losses', 0)}")
-    print(f"exchange_last_sync_ok: {state.get('exchange_last_sync_ok')}")
-    print(f"exchange_active_orders_count: {state.get('exchange_active_orders_count', 0)}")
-    print(f"exchange_managed_orders_count: {state.get('exchange_managed_orders_count', 0)}")
-    print(f"exchange_external_orders_count: {state.get('exchange_external_orders_count', 0)}")
-    print(f"bot_position_managed: {state.get('bot_position_managed')}")
-    print(f"external_position_detected: {state.get('external_position_detected')}")
-    print("====================")
-    print()
-
     if state.get("last_signal_timestamp") == signal_ts:
-        print("SKIP: already processed this signal")
-        print()
+        logger.info(f"skip already_processed_signal signal_ts={signal_ts}")
         return
 
     block_external, block_external_reason = should_block_due_to_external_state(state)
     if block_external:
-        mark_block(state, state_store, settings, signal_ts, block_external_reason)
+        mark_block(state, state_store, settings, signal_ts, block_external_reason, logger)
         return
 
     block_open, block_reason = should_block_new_open_from_exchange_state(
@@ -342,14 +377,14 @@ def run_cycle(settings, args):
         )
 
     if block_open:
-        mark_block(state, state_store, settings, signal_ts, block_reason)
+        mark_block(state, state_store, settings, signal_ts, block_reason, logger)
         return
 
     previous_position = int(state.get("current_position", 0))
     bot_position_managed = bool(state.get("bot_position_managed"))
 
     if previous_position != 0 and not bot_position_managed:
-        mark_block(state, state_store, settings, signal_ts, "unmanaged_position_close_forbidden")
+        mark_block(state, state_store, settings, signal_ts, "unmanaged_position_close_forbidden", logger)
         return
 
     risk = RiskManager(settings.risk)
@@ -360,7 +395,19 @@ def run_cycle(settings, args):
         state=state,
     )
 
-    print("RISK DECISION:", decision)
+    logger.info(f"risk_decision approved={decision.approved} reason={decision.reason}")
+    logger.event(
+        "risk_decision",
+        {
+            "approved": decision.approved,
+            "reason": decision.reason,
+            "target_position": decision.target_position,
+            "order_qty": decision.order_qty,
+            "order_side": decision.order_side,
+            "reduce_only": decision.reduce_only,
+            "signal_timestamp": signal_ts,
+        },
+    )
 
     state["last_decision_timestamp"] = datetime.now(timezone.utc).isoformat()
 
@@ -370,7 +417,7 @@ def run_cycle(settings, args):
         return
 
     if decision.reduce_only and not bot_position_managed:
-        mark_block(state, state_store, settings, signal_ts, "reduce_only_close_for_unmanaged_position_forbidden")
+        mark_block(state, state_store, settings, signal_ts, "reduce_only_close_for_unmanaged_position_forbidden", logger)
         return
 
     executor = BybitExecutor(settings.execution)
@@ -390,7 +437,7 @@ def run_cycle(settings, args):
         )
 
         if protection_error is not None:
-            mark_block(state, state_store, settings, signal_ts, protection_error)
+            mark_block(state, state_store, settings, signal_ts, protection_error, logger)
             return
 
         order_link_id = executor.build_order_link_id("OPEN")
@@ -402,7 +449,7 @@ def run_cycle(settings, args):
 
     elif decision.reduce_only:
         if not bot_position_managed:
-            mark_block(state, state_store, settings, signal_ts, "managed_close_required_but_position_not_managed")
+            mark_block(state, state_store, settings, signal_ts, "managed_close_required_but_position_not_managed", logger)
             return
         order_link_id = executor.build_order_link_id("CLOSE")
         state["bot_position_pending_close"] = True
@@ -421,10 +468,26 @@ def run_cycle(settings, args):
         require_tpsl_on_open=True,
     )
 
-    print("EXEC RESULT:", result)
+    logger.info(
+        f"order_result ok={result.ok} message={result.message} "
+        f"side={decision.order_side} qty={decision.order_qty} reduce_only={decision.reduce_only}"
+    )
+    logger.event(
+        "order_result",
+        {
+            "ok": result.ok,
+            "message": result.message,
+            "side": decision.order_side,
+            "qty": decision.order_qty,
+            "target_position": decision.target_position,
+            "reduce_only": decision.reduce_only,
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
+            "signal_timestamp": signal_ts,
+        },
+    )
 
     if not result.ok:
-        print("ORDER FAILED")
         state["bot_position_pending_open"] = False
         state["bot_position_pending_close"] = False
         state["last_signal_timestamp"] = signal_ts
@@ -444,7 +507,7 @@ def run_cycle(settings, args):
         state_store.save(state)
         return
 
-    post_state, post_sync_result = sync_state_with_exchange(settings, state_store, state)
+    post_state, post_sync_result = sync_state_with_exchange(settings, state_store, state, logger)
     if post_sync_result.ok:
         post_state["last_signal_timestamp"] = signal_ts
         post_state["last_decision_timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -471,7 +534,7 @@ def run_cycle(settings, args):
         state_store.save(post_state)
         return
 
-    print("WARNING: post-order exchange sync failed, falling back to local state update")
+    logger.warning("post-order exchange sync failed, falling back to local state update")
     state["bot_position_pending_open"] = False
     state["bot_position_pending_close"] = False
     state = apply_fill_to_state(
@@ -490,36 +553,26 @@ def run_cycle(settings, args):
 def main():
     args = parse_args()
     settings = load_settings()
+    logger = RuntimeLogger(LOGS_DIR)
 
-    print("AI Trader live loop started")
-    print(f"mode={settings.execution.mode}")
-    print(f"testnet={settings.execution.testnet}")
-    print(f"candidate_id={settings.strategy.candidate_id}")
-    print(f"symbol={settings.data.symbol}")
-    print(f"interval_main={settings.data.interval_main}")
-    print(f"interval_htf={settings.data.interval_htf}")
-    print(f"bars_15m={settings.data.bars_15m}")
-    print(f"bars_30m={settings.data.bars_30m}")
-    print(f"state_file={settings.runtime.state_file}")
-    print(f"take_profit_pct={settings.risk.take_profit_pct}")
-    print(f"stop_loss_pct={settings.risk.stop_loss_pct}")
-    print("data_refresh_policy=online_in_memory")
-    print("ownership_policy=managed_only")
-    print("open_policy=require_tp_sl")
-    print()
+    logger.info(
+        f"startup mode={settings.execution.mode} testnet={settings.execution.testnet} "
+        f"candidate_id={settings.strategy.candidate_id} symbol={settings.data.symbol} "
+        f"interval_main={settings.data.interval_main} interval_htf={settings.data.interval_htf}"
+    )
 
     if args.once:
-        run_cycle(settings, args)
+        run_cycle(settings, args, logger)
         return
 
     while True:
         try:
-            run_cycle(settings, args)
+            run_cycle(settings, args, logger)
         except KeyboardInterrupt:
-            print("Stopped by user")
+            logger.info("stopped_by_user")
             return
         except Exception as exc:
-            print(f"cycle_failed: {exc}")
+            logger.warning(f"cycle_failed error={exc}")
 
         time.sleep(settings.runtime.poll_seconds)
 

@@ -2,352 +2,245 @@
 
 ## Назначение
 
-Единый проект для:
-
-* research (поиск сигналов),
-* backtest,
-* paper/testnet исполнения,
-* перехода к live торговле.
+Система для:
+- исследования рынка (research)
+- генерации сигналов (alpha)
+- управления риском (risk)
+- исполнения сделок (execution)
+- работы в live режиме
 
 Инструмент:
-
-* Bybit
-* BTCUSDT
-* linear (USDT perpetual, деривативы)
+- Bybit
+- BTCUSDT (USDT perpetual)
 
 Таймфреймы:
-
-* основной: 15m
-* старший: 30m
-
----
-
-## Фактическое состояние (ВАЖНО)
-
-Проект уже НЕ research-only.
-
-Работает:
-
-* config: `src/config/settings.py`
-* data layer (загрузка и локальное хранение)
-* feature layer
-* стратегии и кандидаты
-* backtest
-* live loop
-* state store
-* risk manager
-* execution layer (Bybit)
-* paper mode
-* testnet mode
-* реальный order submit на testnet подтверждён
-* реальная позиция на testnet уже открывалась кодом
-
-Подтверждено:
-
-* API keys рабочие
-* подпись запросов рабочая
-* unified trading account настроен
-* лимитные ордера проходят
-* qty/price normalization работает
+- 15m (основной)
+- 30m (старший)
 
 ---
 
-## КРИТИЧЕСКИЕ ТЕКУЩИЕ ПРОБЛЕМЫ
+## ТЕКУЩИЙ СТАТУС (ФАКТ)
 
-### 1. ДАННЫЕ НЕ ОБНОВЛЯЮТСЯ ГАРАНТИРОВАННО
+Система технически работает, но **не торгует по дизайну**, так как:
+- текущие кандидаты не генерируют сигналов
 
-* `data_processor.py` читает локальные CSV как есть
-* нет обязательного refresh перед расчётом сигнала
-* live loop может работать на устаревших свечах
-
-Следствие:
-
-* сигналы считаются по старому рынку
-* возможны неадекватные решения
-
----
-
-### 2. РАССИНХРОН MARKET DATA vs EXCHANGE
-
-* loader ходит в mainnet
-* execution работает с testnet
-
-Следствие:
-
-* цена в сигнале ≠ цена на бирже
-* пример: ~70k vs ~228k
-* PnL и риск искажаются
+При этом подтверждено:
+- online market data (без CSV)
+- live loop стабильно запускается
+- execution работает (paper/testnet)
+- TP/SL enforced
+- state синхронизируется
+- logging в файл работает
 
 ---
 
-### 3. DATA LAYER ИГНОРИРУЕТ SETTINGS
+## КАНОНИЧЕСКИЕ ИНВАРИАНТЫ
 
-* `data_processor.py` захардкожен на:
+### 1. Источник истины — рынок
+Все данные берутся напрямую из Bybit API.
 
-  * btcusdt_15m.csv
-  * btcusdt_30m.csv
+### 2. Источник истины — позиция
+Открытая позиция определяется только через биржу.
 
-Следствие:
+### 3. Любая позиция защищена
+Открытие допускается только с TP/SL.
 
-* смена symbol в settings не работает
-* возможна работа не с тем рынком
+### 4. Бот обязан уметь закрывать позицию
+TP/SL — обязательная защита, но не единственный механизм выхода.
 
----
-
-### 4. НЕТ CONSISTENT DATA FLOW
-
-* разные части системы используют разные данные
-* данные могут быть разной давности
+### 5. Логирование — часть безопасности
+Все критичные действия фиксируются в файлах логов.
 
 ---
 
-### 5. EXCHANGE SYNC НЕ ЗАВЕРШЁН
+## ЛОГИКА ПОЗИЦИИ (АКТУАЛЬНАЯ)
 
-Есть:
+Текущая модель (переходная, гибридная):
 
-* получение позиции
-* получение ордеров
+- ownership не используется как фактор принятия решений
+- state всё ещё содержит managed-флаги
 
-Нет:
+```
+если позиция есть:
+    если соответствует стратегии → держим
+    если не соответствует → закрываем (WARNING)
+```
 
-* reconciliation
-* ownership модели
-* защиты от чужих позиций
-
----
-
-### 6. TP/SL НЕ ОБЯЗАТЕЛЕН
-
-* позиция может быть открыта без защиты
+Аккаунт предполагается использовать только ботом.  
+Ручная торговля не поддерживается.
 
 ---
 
-## DATA SOURCE POLICY (ОБЯЗАТЕЛЬНО)
+## RUNTIME КОНТРАКТ (ЖЁСТКИЙ)
 
-* data loader и execution должны использовать один режим:
+Каждый цикл обязан выполнять:
 
-  * testnet → testnet
-  * mainnet → mainnet
+1. sync с биржей  
+   если sync не успешен → торговля запрещена в этом цикле
 
-* запрещено:
+2. получить market data  
+3. построить сигнал  
 
-  * брать market data с mainnet и торговать на testnet
-  * использовать устаревшие CSV без проверки
+4. reconcile позиции (обязательный шаг, выполняется до любых торговых действий)
 
-* любой запуск live должен гарантировать:
+5. если desired_position = 0 → новые позиции не открываются  
+6. если позиция уже открыта → новые позиции не открываются  
 
-  * данные свежие
-  * данные соответствуют рынку исполнения
+7. применить risk  
 
----
+8. исполнить ордер (если есть решение)  
 
-## STATE VS EXCHANGE (КРИТИЧНО)
+9. сохранить state  
+10. записать лог  
 
-* источник истины = биржа
-* локальный state вторичен
-
-каждый цикл:
-
-1. получить позицию с биржи
-2. получить активные ордера
-3. синхронизировать state
-4. только потом принимать решения
+Любое отклонение — ошибка дизайна.
 
 ---
 
-## POSITION OWNERSHIP
+## DATA
 
-бот НЕ имеет права:
-
-* закрывать позицию без уверенности что она его
-* модифицировать чужие ордера
-
-будет реализовано:
-
-* идентификация своих ордеров
-* tagging / логика владения
+- источник: Bybit API
+- обработка: в памяти
+- CSV не используется для runtime
 
 ---
 
-## LIVE INVARIANTS
+## LOGGING
 
-каждый запуск live loop обязан гарантировать:
+Файлы:
+- logs/runtime.log
+- logs/events.jsonl
 
-* данные свежие
-* данные соответствуют рынку
-* exchange sync выполнен
-* state синхронизирован
-* нет дублей ордеров
-* позиция защищена (TP/SL) или закрывается аварийно
+Назначение:
+- runtime.log — человекочитаемый лог
+- events.jsonl — audit trail
 
----
-
-## ГЛАВНЫЕ ПРАВИЛА
-
-1. Источник истины по позиции = биржа
-2. Все настройки только из `settings.py`
-3. Данные должны быть свежими перед сигналом
-4. Бот управляет только своими позициями
-5. Любая позиция должна иметь TP/SL
-6. Нельзя допускать рассинхрон данных
-7. Никаких хардкодов
+WARNING — часть системы контроля риска.
 
 ---
 
-## АРХИТЕКТУРА
+## STATE
 
-### Config
+Файл:
+- data/live_state.json
 
-`src/config/settings.py`
+Содержит:
+- текущую позицию
+- qty
+- entry_price
+- PnL
+- служебные флаги
+- снимок состояния биржи
 
----
-
-### Data
-
-`src/data/bybit_loader.py`
-
-* загрузка свечей
-* должен учитывать testnet/mainnet (через settings)
-
----
-
-### Processing
-
-`src/processing/data_processor.py`
-
-* merge 15m + 30m
-* сейчас использует хардкод (проблема)
+Важно:
+- state является производным от exchange
+- не является источником истины
 
 ---
 
-### Features
+## ЧТО РАБОТАЕТ (STABLE)
 
-`src/features/feature_factory.py`
-
----
-
-### Research
-
-* alpha_miner
-* run_candidate
-* стратегии
+- execution
+- online data
+- logging
+- live loop (технически)
+- TP/SL enforcement
+- state management
 
 ---
 
-### Backtest
+## ЧТО НЕ ГОТОВО (UNSTABLE)
 
-`src/backtest/engine.py`
-
----
-
-### Live
-
-`src/live/live_loop.py`
-
----
-
-### State
-
-`src/live/state_store.py`
-
----
-
-### Risk
-
-`src/risk/risk_manager.py`
-
----
-
-### Execution
-
-`src/execution/bybit_executor.py`
-
----
-
-### Smoke test
-
-`src/execution/smoke_test_order.py`
+- research (сигналы)
+- банк стратегий
+- policy layer
+- финальная логика позиции
 
 ---
 
 ## PIPELINE
 
-Research:
-data → features → signals → backtest → кандидаты
-
-Live:
-data → signal → risk → execution → state
-
----
-
-## ЧТО УЖЕ РАБОТАЕТ
-
-* execution
-* API интеграция
-* testnet ордера
-* открытие позиции
-* risk базовый
-* state хранение
-
----
-
-## ЧТО СРОЧНО ИСПРАВИТЬ
-
-1. loader должен учитывать testnet/mainnet
-2. убрать хардкод CSV
-3. добавить auto refresh данных
-4. добавить freshness check
-5. синхронизировать data и exchange
-6. TP/SL при открытии (обязательно)
-7. ownership logic
-
----
-
-## ENTRYPOINTS
-
-```bash
-python src/data/bybit_loader.py --use-settings
-python src/live/live_loop.py --once
-python src/live/live_loop.py --once --refresh-data
-python src/research/run_candidate.py --candidate-id 39
-python src/execution/smoke_test_order.py
+```
+exchange_sync
+→ data_fetch
+→ processing
+→ signal
+→ reconcile
+→ risk
+→ execution
+→ state
+→ logging
 ```
 
 ---
 
-## ENV
+## ENTRYPOINT
 
-* BYBIT_API_KEY
-* BYBIT_API_SECRET
-* AI_TRADER_MODE
-* AI_TRADER_TESTNET
-* AI_TRADER_MAX_POSITION_USDT
-* AI_TRADER_ALLOW_LONG
-* AI_TRADER_ALLOW_SHORT
+```
+python src/live/live_loop.py --once
+python src/live/live_loop.py
+```
 
 ---
 
-## MODES
+## ENV (основные)
 
-paper — эмуляция
-testnet — реальная торговля
-mainnet — не используется
+- BYBIT_API_KEY
+- BYBIT_API_SECRET
+- AI_TRADER_MODE
+- AI_TRADER_TESTNET
+
+Полный список параметров см. в settings.py
 
 ---
 
-## TESTNET
+## РЕЖИМЫ
 
-* плохая ликвидность
-* не использовать для анализа
-* только для execution
+### paper
+- без реальной торговли
+
+### testnet
+- реальная торговля без риска
+
+### mainnet
+- запрещён до готовности research
+
+---
+
+## ОГРАНИЧЕНИЯ
+
+Система сейчас не учитывает:
+- funding
+- latency
+- проскальзывание в экстремальных условиях
+- мульти-актив
+- портфельную логику
+
+---
+
+## ГЛАВНЫЙ БЛОКЕР
+
+research / signals
+
+Без сигналов система не торгует.
+
+---
+
+## СЛЕДУЮЩИЙ ШАГ
+
+1. проверить rule_builder
+2. проверить alpha_miner
+3. найти рабочий candidate
+4. протестировать на testnet
 
 ---
 
 ## КАНОНИЧЕСКИЙ СТАТУС
 
-* execution работает
-* testnet подтверждён
-* позиция открывалась
-* архитектура собрана
-* КРИТИЧЕСКАЯ ПРОБЛЕМА: рассинхрон данных
-* система пока НЕ готова к real trading
+- execution — готов
+- data — online
+- logging — есть
+- runtime — стабилен
+- trading — не активен (нет сигналов)
+
+Проект технически готов к торговле, но не готов по стратегии.

@@ -232,14 +232,16 @@ def save_data(df: pd.DataFrame, output_path: Path) -> Path:
     return output_path
 
 
-def download_and_save(
+def fetch_klines_prepared(
     symbol: str,
     interval: str,
     total: int,
     category: str,
     *,
     settings: AppSettings | None = None,
-):
+    freshness_multiplier: int = 2,
+    enforce_freshness: bool = True,
+) -> tuple[pd.DataFrame, dict, dict]:
     if settings is None:
         settings = load_settings()
 
@@ -260,12 +262,75 @@ def download_and_save(
         interval=interval,
     )
 
+    freshness = compute_freshness(clean_df)
+    if enforce_freshness:
+        freshness = assert_fresh_enough(
+            clean_df,
+            interval_minutes=int(interval),
+            multiplier=freshness_multiplier,
+        )
+
+    return clean_df, report, freshness
+
+
+def fetch_runtime_market_data(
+    settings: AppSettings | None = None,
+    *,
+    enforce_freshness: bool = True,
+    freshness_multiplier: int = 2,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if settings is None:
+        settings = load_settings()
+
+    df_15, _, _ = fetch_klines_prepared(
+        symbol=settings.data.symbol,
+        interval=settings.data.interval_main,
+        total=settings.data.bars_15m,
+        category=settings.data.category,
+        settings=settings,
+        freshness_multiplier=freshness_multiplier,
+        enforce_freshness=enforce_freshness,
+    )
+
+    df_30, _, _ = fetch_klines_prepared(
+        symbol=settings.data.symbol,
+        interval=settings.data.interval_htf,
+        total=settings.data.bars_30m,
+        category=settings.data.category,
+        settings=settings,
+        freshness_multiplier=freshness_multiplier,
+        enforce_freshness=enforce_freshness,
+    )
+
+    return df_15, df_30
+
+
+def download_and_save(
+    symbol: str,
+    interval: str,
+    total: int,
+    category: str,
+    *,
+    settings: AppSettings | None = None,
+):
+    if settings is None:
+        settings = load_settings()
+
+    clean_df, report, _ = fetch_klines_prepared(
+        symbol=symbol,
+        interval=interval,
+        total=total,
+        category=category,
+        settings=settings,
+        freshness_multiplier=2,
+        enforce_freshness=True,
+    )
+
     print(f"\n=== {symbol} {interval}m tail ===")
     print(clean_df[["timestamp_msk", "open", "high", "low", "close"]].tail())
 
     print_validation_report(report)
     print_freshness_report(clean_df, symbol=symbol, interval=interval)
-    assert_fresh_enough(clean_df, interval_minutes=int(interval), multiplier=2)
 
     output_path = get_data_path(symbol=symbol, interval=interval)
     save_data(clean_df, output_path)

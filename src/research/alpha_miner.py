@@ -1,12 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
 import sys
 from pathlib import Path
+
 import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.append(str(ROOT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
 
-from processing.data_processor import process
+from config.settings import load_settings
+from data.market_data_manager import get_processed_market_data
 from research.rule_builder import build_rule_candidates
 from research.strategies.atr_breakout import compute_atr
 from backtest.engine import apply_position_logic, run_backtest, calculate_metrics
@@ -16,7 +19,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 REPORTS_DIR = BASE_DIR / "reports"
 
 
-def prepare_pa_features(df):
+def prepare_pa_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df["range_15m"] = df["high_15m"] - df["low_15m"]
@@ -55,28 +58,28 @@ def prepare_pa_features(df):
     return df
 
 
-def split_df(df):
+def split_df(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     split = int(len(df) * 0.7)
     return df.iloc[:split].copy(), df.iloc[split:].copy()
 
 
-def apply_candidate(df, candidate):
+def apply_candidate(df: pd.DataFrame, candidate: dict) -> pd.DataFrame:
     family = candidate["family"]
     func = STRATEGY_REGISTRY[family]["apply"]
 
-    df = func(df, candidate)
+    df = func(df.copy(), candidate)
 
     df["position"] = apply_position_logic(
         df["entry_signal"],
         candidate["hold_bars"],
-        candidate["direction"]
+        candidate["direction"],
     )
 
     return df
 
 
-def classify_candidate(train_m, test_m):
-    reasons = []
+def classify_candidate(train_m: dict, test_m: dict) -> tuple[bool, bool, list[str]]:
+    reasons: list[str] = []
 
     train_return = train_m["total_return_pct"]
     test_return = test_m["total_return_pct"]
@@ -128,7 +131,12 @@ def classify_candidate(train_m, test_m):
     return is_valid, is_promising, reasons
 
 
-def calculate_candidate_score(train_m, test_m, is_valid, is_promising):
+def calculate_candidate_score(
+    train_m: dict,
+    test_m: dict,
+    is_valid: bool,
+    is_promising: bool,
+) -> float:
     train_return = train_m["total_return_pct"]
     test_return = test_m["total_return_pct"]
     test_sharpe = test_m["sharpe_approx"]
@@ -152,8 +160,9 @@ def calculate_candidate_score(train_m, test_m, is_valid, is_promising):
     return round(score, 4)
 
 
-def run_alpha_miner():
-    df = prepare_pa_features(process())
+def run_alpha_miner() -> pd.DataFrame:
+    settings = load_settings()
+    df = prepare_pa_features(get_processed_market_data(settings))
     train_df, test_df = split_df(df)
 
     results = []
@@ -169,37 +178,41 @@ def run_alpha_miner():
             is_valid, is_promising, reasons = classify_candidate(train_m, test_m)
             score = calculate_candidate_score(train_m, test_m, is_valid, is_promising)
 
-            results.append({
-                "id": i,
-                "family": c["family"],
-                "params": str(c),
-                "train_return": train_m["total_return_pct"],
-                "test_return": test_m["total_return_pct"],
-                "train_sharpe": train_m["sharpe_approx"],
-                "test_sharpe": test_m["sharpe_approx"],
-                "test_drawdown": test_m["max_drawdown_pct"],
-                "test_trades": test_m["trades"],
-                "score": score,
-                "is_valid": is_valid,
-                "is_promising": is_promising,
-                "reasons": "|".join(reasons),
-            })
+            results.append(
+                {
+                    "id": i,
+                    "family": c["family"],
+                    "params": str(c),
+                    "train_return": train_m["total_return_pct"],
+                    "test_return": test_m["total_return_pct"],
+                    "train_sharpe": train_m["sharpe_approx"],
+                    "test_sharpe": test_m["sharpe_approx"],
+                    "test_drawdown": test_m["max_drawdown_pct"],
+                    "test_trades": test_m["trades"],
+                    "score": score,
+                    "is_valid": is_valid,
+                    "is_promising": is_promising,
+                    "reasons": "|".join(reasons),
+                }
+            )
         except Exception as e:
-            results.append({
-                "id": i,
-                "family": c["family"],
-                "params": str(c),
-                "train_return": None,
-                "test_return": None,
-                "train_sharpe": None,
-                "test_sharpe": None,
-                "test_drawdown": None,
-                "test_trades": None,
-                "score": -1e9,
-                "is_valid": False,
-                "is_promising": False,
-                "reasons": f"backtest_error:{e}",
-            })
+            results.append(
+                {
+                    "id": i,
+                    "family": c["family"],
+                    "params": str(c),
+                    "train_return": None,
+                    "test_return": None,
+                    "train_sharpe": None,
+                    "test_sharpe": None,
+                    "test_drawdown": None,
+                    "test_trades": None,
+                    "score": -1e9,
+                    "is_valid": False,
+                    "is_promising": False,
+                    "reasons": f"backtest_error:{e}",
+                }
+            )
 
     df_res = pd.DataFrame(results).sort_values(
         by=["is_valid", "is_promising", "score", "test_return"],
@@ -220,11 +233,24 @@ def run_alpha_miner():
     print(valid_top)
 
     print("\n=== PROMISING TOP ===")
-    print(promising_top[[
-        "id", "family", "params", "train_return", "test_return",
-        "test_sharpe", "test_drawdown", "test_trades",
-        "score", "reasons"
-    ]].head(15))
+    print(
+        promising_top[
+            [
+                "id",
+                "family",
+                "params",
+                "train_return",
+                "test_return",
+                "test_sharpe",
+                "test_drawdown",
+                "test_trades",
+                "score",
+                "reasons",
+            ]
+        ].head(15)
+    )
+
+    return df_res
 
 
 if __name__ == "__main__":

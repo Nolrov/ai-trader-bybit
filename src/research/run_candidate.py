@@ -10,8 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
 from config.settings import load_settings
-from data.bybit_loader import download_and_save
-from processing.data_processor import process
+from data.market_data_manager import get_processed_market_data
 from research.rule_builder import build_rule_candidates
 from research.alpha_miner import prepare_pa_features, apply_candidate, split_df
 from backtest.engine import run_backtest, calculate_metrics
@@ -35,33 +34,7 @@ def parse_args():
         action="store_true",
         help="Save one-candidate JSON report to reports/",
     )
-    parser.add_argument(
-        "--refresh-data",
-        action="store_true",
-        help="Refresh market data from Bybit using project settings before processing",
-    )
     return parser.parse_args()
-
-
-def refresh_market_data(settings) -> None:
-    print("Refreshing market data from Bybit using project settings...")
-
-    download_and_save(
-        symbol=settings.data.symbol,
-        interval=settings.data.interval_main,
-        total=settings.data.bars_15m,
-        category=settings.data.category,
-    )
-
-    download_and_save(
-        symbol=settings.data.symbol,
-        interval=settings.data.interval_htf,
-        total=settings.data.bars_30m,
-        category=settings.data.category,
-    )
-
-    print("Market data refreshed.")
-    print()
 
 
 def build_description(candidate: dict) -> str:
@@ -120,10 +93,9 @@ def main():
     args = parse_args()
     settings = load_settings()
 
-    if args.refresh_data:
-        refresh_market_data(settings)
+    # ❗ ЕДИНАЯ ТОЧКА ДАННЫХ
+    df = get_processed_market_data(settings)
 
-    df = process()
     df = prepare_pa_features(df)
     train_df, test_df = split_df(df)
 

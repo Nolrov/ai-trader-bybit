@@ -21,9 +21,14 @@ if str(SRC_DIR) not in sys.path:
 from config.settings import AppSettings, load_settings  # noqa: E402
 
 
+HTTP_TIMEOUT_SECONDS = 20
+RATE_LIMIT_MAX_RETRIES = 8
+RATE_LIMIT_BASE_SLEEP_SECONDS = 2.0
+PAGE_SLEEP_SECONDS = 0.15
+
+
 def resolve_market_base_url(settings: AppSettings | None = None) -> str:
     # Рыночные данные всегда берём с mainnet.
-    # execution.testnet должен влиять только на отправку ордеров, а не на исторические/текущие свечи.
     return BASE_URL_MAINNET
 
 
@@ -33,6 +38,49 @@ def build_data_filename(symbol: str, interval: str) -> str:
 
 def get_data_path(symbol: str, interval: str) -> Path:
     return DATA_DIR / build_data_filename(symbol=symbol, interval=interval)
+
+
+def _request_json_with_retry(
+    *,
+    url: str,
+    params: dict,
+    timeout: int = HTTP_TIMEOUT_SECONDS,
+) -> dict:
+    last_error: Exception | None = None
+
+    for attempt in range(RATE_LIMIT_MAX_RETRIES):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("retCode") == 0:
+                return data
+
+            if data.get("retCode") == 10006:
+                sleep_s = RATE_LIMIT_BASE_SLEEP_SECONDS * (2 ** attempt)
+                print(
+                    f"Bybit rate limit hit (attempt {attempt + 1}/{RATE_LIMIT_MAX_RETRIES}), "
+                    f"sleeping {sleep_s:.1f}s..."
+                )
+                time.sleep(sleep_s)
+                continue
+
+            raise RuntimeError(f"Bybit API error: {data}")
+
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            sleep_s = RATE_LIMIT_BASE_SLEEP_SECONDS * (2 ** attempt)
+            print(
+                f"Request failed (attempt {attempt + 1}/{RATE_LIMIT_MAX_RETRIES}), "
+                f"sleeping {sleep_s:.1f}s... error={exc}"
+            )
+            time.sleep(sleep_s)
+
+    if last_error is not None:
+        raise RuntimeError(f"Bybit request failed after retries: {last_error}")
+
+    raise RuntimeError("Bybit request failed after retries due to repeated rate limiting")
 
 
 def get_klines_full(
@@ -61,16 +109,11 @@ def get_klines_full(
         if end is not None:
             params["end"] = end
 
-        response = requests.get(
-            f"{base_url}/v5/market/kline",
+        data = _request_json_with_retry(
+            url=f"{base_url}/v5/market/kline",
             params=params,
-            timeout=15,
+            timeout=HTTP_TIMEOUT_SECONDS,
         )
-        response.raise_for_status()
-        data = response.json()
-
-        if data.get("retCode") != 0:
-            raise RuntimeError(f"Bybit API error: {data}")
 
         klines = data.get("result", {}).get("list", [])
         if not klines:
@@ -78,12 +121,10 @@ def get_klines_full(
 
         all_data.extend(klines)
 
-        # Берём самый старый timestamp из пачки как новый end.
-        # Минус 1 мс, чтобы не тащить повторно ту же самую свечу на следующем запросе.
         oldest_ts = int(klines[-1][0])
         end = oldest_ts - 1
 
-        time.sleep(0.1)
+        time.sleep(PAGE_SLEEP_SECONDS)
 
     all_data = all_data[:total]
 

@@ -40,7 +40,7 @@ class DataSettings:
 
 @dataclass
 class StrategySettings:
-    candidate_id: int = 39
+    candidate_id: int = 56
 
 
 @dataclass
@@ -86,7 +86,7 @@ def load_settings() -> AppSettings:
             bars_30m=_get_int("AI_TRADER_BARS_30M", 10000),
         ),
         strategy=StrategySettings(
-            candidate_id=_get_int("AI_TRADER_CANDIDATE_ID", 39),
+            candidate_id=_get_int("AI_TRADER_CANDIDATE_ID", 56),
         ),
         risk=RiskSettings(
             max_position_usdt=_get_float("AI_TRADER_MAX_POSITION_USDT", 50.0),

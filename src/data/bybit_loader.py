@@ -22,9 +22,9 @@ from config.settings import AppSettings, load_settings  # noqa: E402
 
 
 def resolve_market_base_url(settings: AppSettings | None = None) -> str:
-    if settings is None:
-        settings = load_settings()
-    return BASE_URL_TESTNET if settings.execution.testnet else BASE_URL_MAINNET
+    # Рыночные данные всегда берём с mainnet.
+    # execution.testnet должен влиять только на отправку ордеров, а не на исторические/текущие свечи.
+    return BASE_URL_MAINNET
 
 
 def build_data_filename(symbol: str, interval: str) -> str:
@@ -77,7 +77,12 @@ def get_klines_full(
             break
 
         all_data.extend(klines)
-        end = klines[-1][0]
+
+        # Берём самый старый timestamp из пачки как новый end.
+        # Минус 1 мс, чтобы не тащить повторно ту же самую свечу на следующем запросе.
+        oldest_ts = int(klines[-1][0])
+        end = oldest_ts - 1
+
         time.sleep(0.1)
 
     all_data = all_data[:total]

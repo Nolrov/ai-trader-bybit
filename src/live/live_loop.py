@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.append(str(ROOT_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
 
 from config.settings import AppSettings, LOGS_DIR, load_settings
-from data.bybit_loader import fetch_runtime_market_data
+from data.market_data_manager import get_processed_market_data
 from execution.bybit_executor import BybitExecutor
 from live.state_store import StateStore
-from processing.data_processor import process_frames
 from research.alpha_miner import apply_candidate, prepare_pa_features
 from research.rule_builder import build_rule_candidates
 from risk.risk_manager import RiskManager
@@ -39,19 +39,7 @@ def get_candidate(settings) -> dict:
 
 
 def build_signal_snapshot(settings) -> dict:
-    df_15, df_30 = fetch_runtime_market_data(
-        settings=settings,
-        enforce_freshness=True,
-        freshness_multiplier=2,
-    )
-
-    df = process_frames(
-        df_15=df_15,
-        df_30=df_30,
-        settings=settings,
-        enforce_freshness=True,
-    )
-
+    df = get_processed_market_data(settings)
     df = prepare_pa_features(df)
 
     candidate = get_candidate(settings)

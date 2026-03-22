@@ -103,6 +103,9 @@ def classify_candidate(train_m, test_m):
     if test_dd < -8:
         reasons.append("deep_drawdown")
 
+    if abs(train_return) > 200 or abs(test_return) > 200:
+        reasons.append("absurd_return")
+
     is_valid = (
         train_return > -3
         and test_return > 0
@@ -110,6 +113,8 @@ def classify_candidate(train_m, test_m):
         and test_trades >= 20
         and test_sharpe >= 0.0
         and test_dd >= -8
+        and abs(train_return) <= 200
+        and abs(test_return) <= 200
     )
 
     is_promising = (
@@ -117,6 +122,7 @@ def classify_candidate(train_m, test_m):
         and test_trades >= 20
         and test_dd >= -10
         and test_sharpe >= -0.1
+        and abs(test_return) <= 200
     )
 
     return is_valid, is_promising, reasons
@@ -153,29 +159,47 @@ def run_alpha_miner():
     results = []
 
     for i, c in enumerate(build_rule_candidates(), 1):
-        train_bt = run_backtest(apply_candidate(train_df, c))
-        test_bt = run_backtest(apply_candidate(test_df, c))
+        try:
+            train_bt = run_backtest(apply_candidate(train_df, c))
+            test_bt = run_backtest(apply_candidate(test_df, c))
 
-        train_m = calculate_metrics(train_bt)
-        test_m = calculate_metrics(test_bt)
+            train_m = calculate_metrics(train_bt)
+            test_m = calculate_metrics(test_bt)
 
-        is_valid, is_promising, reasons = classify_candidate(train_m, test_m)
-        score = calculate_candidate_score(train_m, test_m, is_valid, is_promising)
+            is_valid, is_promising, reasons = classify_candidate(train_m, test_m)
+            score = calculate_candidate_score(train_m, test_m, is_valid, is_promising)
 
-        results.append({
-            "id": i,
-            "family": c["family"],
-            "train_return": train_m["total_return_pct"],
-            "test_return": test_m["total_return_pct"],
-            "train_sharpe": train_m["sharpe_approx"],
-            "test_sharpe": test_m["sharpe_approx"],
-            "test_drawdown": test_m["max_drawdown_pct"],
-            "test_trades": test_m["trades"],
-            "score": score,
-            "is_valid": is_valid,
-            "is_promising": is_promising,
-            "reasons": "|".join(reasons),
-        })
+            results.append({
+                "id": i,
+                "family": c["family"],
+                "params": str(c),
+                "train_return": train_m["total_return_pct"],
+                "test_return": test_m["total_return_pct"],
+                "train_sharpe": train_m["sharpe_approx"],
+                "test_sharpe": test_m["sharpe_approx"],
+                "test_drawdown": test_m["max_drawdown_pct"],
+                "test_trades": test_m["trades"],
+                "score": score,
+                "is_valid": is_valid,
+                "is_promising": is_promising,
+                "reasons": "|".join(reasons),
+            })
+        except Exception as e:
+            results.append({
+                "id": i,
+                "family": c["family"],
+                "params": str(c),
+                "train_return": None,
+                "test_return": None,
+                "train_sharpe": None,
+                "test_sharpe": None,
+                "test_drawdown": None,
+                "test_trades": None,
+                "score": -1e9,
+                "is_valid": False,
+                "is_promising": False,
+                "reasons": f"backtest_error:{e}",
+            })
 
     df_res = pd.DataFrame(results).sort_values(
         by=["is_valid", "is_promising", "score", "test_return"],
@@ -197,7 +221,7 @@ def run_alpha_miner():
 
     print("\n=== PROMISING TOP ===")
     print(promising_top[[
-        "id", "family", "train_return", "test_return",
+        "id", "family", "params", "train_return", "test_return",
         "test_sharpe", "test_drawdown", "test_trades",
         "score", "reasons"
     ]].head(15))

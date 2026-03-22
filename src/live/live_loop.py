@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import sys
@@ -14,8 +14,8 @@ from config.settings import AppSettings, LOGS_DIR, load_settings
 from data.market_data_manager import get_processed_market_data
 from execution.bybit_executor import BybitExecutor
 from live.state_store import StateStore
-from research.alpha_miner import apply_candidate, prepare_pa_features
-from research.rule_builder import build_rule_candidates
+from policy.policy_manager import PolicyManager
+from research.alpha_miner import prepare_pa_features
 from risk.risk_manager import RiskManager
 from utils.runtime_logger import RuntimeLogger
 
@@ -26,40 +26,26 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_candidate(settings) -> dict:
-    candidates = build_rule_candidates()
-
-    candidate_id = settings.strategy.candidate_id
-    if candidate_id < 1 or candidate_id > len(candidates):
-        raise ValueError(
-            f"candidate_id must be between 1 and {len(candidates)}, got {candidate_id}"
-        )
-
-    return candidates[candidate_id - 1]
-
-
 def build_signal_snapshot(settings) -> dict:
     df = get_processed_market_data(settings)
     df = prepare_pa_features(df)
 
-    candidate = get_candidate(settings)
-    df_signal = apply_candidate(df, candidate)
-
-    if df_signal.empty:
-        raise RuntimeError("signal_dataframe_is_empty_after_processing")
-
-    last_row = df_signal.iloc[-1]
-    recent = df_signal.tail(100)
-
-    signals_count = int((recent["entry_signal"] != 0).sum()) if "entry_signal" in recent.columns else 0
+    policy_manager = PolicyManager(settings)
+    decision = policy_manager.decide(df)
 
     return {
-        "candidate": candidate,
-        "timestamp": str(last_row["timestamp"]),
-        "price": float(last_row["close_15m"]),
-        "entry_signal": int(last_row.get("entry_signal", 0)),
-        "desired_position": int(last_row.get("position", 0)),
-        "signals_last_100_bars": signals_count,
+        "timestamp": decision.timestamp,
+        "price": decision.price,
+        "entry_signal": decision.entry_signal,
+        "desired_position": decision.desired_position,
+        "signals_last_100_bars": decision.signals_last_100_bars,
+        "market_regime": decision.market_regime,
+        "confidence": decision.confidence,
+        "selected_candidates_count": decision.selected_candidates_count,
+        "active_candidates_count": decision.active_candidates_count,
+        "vote_long": decision.vote_long,
+        "vote_short": decision.vote_short,
+        "selected_candidates": decision.selected_candidates,
     }
 
 
@@ -171,10 +157,8 @@ def sync_state_with_exchange(
 def should_block_due_to_external_state(state: dict) -> tuple[bool, str]:
     if state.get("external_position_detected"):
         return True, "external_manual_position_detected"
-
     if int(state.get("exchange_external_orders_count", 0)) > 0:
         return True, "external_manual_orders_detected"
-
     return False, ""
 
 
@@ -208,7 +192,6 @@ def compute_protection_prices(settings: AppSettings, side: str, entry_price: flo
 
     if tp_pct <= 0 or sl_pct <= 0:
         return None, None, "tp_sl_pct_not_configured_in_settings"
-
     side = str(side).strip().lower()
     if entry_price <= 0:
         return None, None, "invalid_entry_price_for_tp_sl"
@@ -276,7 +259,10 @@ def run_cycle(settings, args, logger: RuntimeLogger):
     logger.info(
         f"signal symbol={settings.data.symbol} time={signal_ts} "
         f"price={snap['price']} entry_signal={snap['entry_signal']} "
-        f"desired_position={snap['desired_position']} signals_last_100={snap['signals_last_100_bars']}"
+        f"desired_position={snap['desired_position']} signals_last_100={snap['signals_last_100_bars']} "
+        f"regime={snap['market_regime']} confidence={snap['confidence']} "
+        f"votes_long={snap['vote_long']} votes_short={snap['vote_short']} "
+        f"selected_candidates={snap['selected_candidates_count']}/{snap['active_candidates_count']}"
     )
     logger.event(
         "signal_snapshot",
@@ -287,7 +273,13 @@ def run_cycle(settings, args, logger: RuntimeLogger):
             "entry_signal": snap["entry_signal"],
             "desired_position": snap["desired_position"],
             "signals_last_100_bars": snap["signals_last_100_bars"],
-            "candidate_id": settings.strategy.candidate_id,
+            "market_regime": snap["market_regime"],
+            "confidence": snap["confidence"],
+            "vote_long": snap["vote_long"],
+            "vote_short": snap["vote_short"],
+            "selected_candidates_count": snap["selected_candidates_count"],
+            "active_candidates_count": snap["active_candidates_count"],
+            "selected_candidates": snap["selected_candidates"],
         },
     )
 
@@ -297,17 +289,14 @@ def run_cycle(settings, args, logger: RuntimeLogger):
 
     if exchange_pos != 0 and exchange_qty > 0:
         desired = int(snap["desired_position"])
-
         if exchange_pos != desired:
             logger.warning(
                 f"position_mismatch_detected exchange_position={exchange_pos} "
-                f"desired_position={desired} qty={exchange_qty} action=force_close "
-                f"signal_ts={signal_ts}"
+                f"desired_position={desired} qty={exchange_qty} action=force_close signal_ts={signal_ts}"
             )
 
             executor = BybitExecutor(settings.execution)
             close_side = "Sell" if exchange_pos > 0 else "Buy"
-
             result = executor.place_order(
                 symbol=settings.data.symbol,
                 side=close_side,
@@ -409,13 +398,11 @@ def run_cycle(settings, args, logger: RuntimeLogger):
         return
 
     executor = BybitExecutor(settings.execution)
-
     take_profit = None
     stop_loss = None
     order_link_id = None
 
     is_opening_order = (not decision.reduce_only) and int(decision.target_position) != 0
-
     if is_opening_order:
         open_side = str(decision.order_side)
         take_profit, stop_loss, protection_error = compute_protection_prices(
@@ -434,7 +421,6 @@ def run_cycle(settings, args, logger: RuntimeLogger):
         state["bot_last_open_order_link_id"] = order_link_id
         state["bot_position_take_profit"] = take_profit
         state["bot_position_stop_loss"] = stop_loss
-
     elif decision.reduce_only:
         if not bot_position_managed:
             mark_block(state, state_store, settings, signal_ts, "managed_close_required_but_position_not_managed", logger)
@@ -545,8 +531,8 @@ def main():
 
     logger.info(
         f"startup mode={settings.execution.mode} testnet={settings.execution.testnet} "
-        f"candidate_id={settings.strategy.candidate_id} symbol={settings.data.symbol} "
-        f"interval_main={settings.data.interval_main} interval_htf={settings.data.interval_htf}"
+        f"symbol={settings.data.symbol} interval_main={settings.data.interval_main} "
+        f"interval_htf={settings.data.interval_htf} active_candidates_file={settings.policy.active_candidates_file}"
     )
 
     if args.once:
@@ -561,7 +547,6 @@ def main():
             return
         except Exception as exc:
             logger.warning(f"cycle_failed error={exc}")
-
         time.sleep(settings.runtime.poll_seconds)
 
 

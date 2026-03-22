@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass
@@ -8,6 +8,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 LOGS_DIR = BASE_DIR / "logs"
+REPORTS_DIR = BASE_DIR / "reports"
 
 
 def _get(name: str, default):
@@ -30,17 +31,19 @@ def _get_bool(name: str, default: bool):
 class DataSettings:
     symbol: str = "BTCUSDT"
     category: str = "linear"
-
     interval_main: str = "15"
     interval_htf: str = "30"
-
     bars_15m: int = 15000
     bars_30m: int = 10000
 
 
 @dataclass
-class StrategySettings:
-    candidate_id: int = 56
+class PolicySettings:
+    active_candidates_file: Path = REPORTS_DIR / "active_candidates.json"
+    max_active_candidates: int = 12
+    decision_threshold: float = 0.15
+    recent_bars_for_evaluation: int = 400
+    min_candidate_score: float = -10.0
 
 
 @dataclass
@@ -72,7 +75,7 @@ class RuntimeSettings:
 @dataclass
 class AppSettings:
     data: DataSettings
-    strategy: StrategySettings
+    policy: PolicySettings
     risk: RiskSettings
     execution: ExecutionSettings
     runtime: RuntimeSettings
@@ -85,8 +88,14 @@ def load_settings() -> AppSettings:
             bars_15m=_get_int("AI_TRADER_BARS_15M", 15000),
             bars_30m=_get_int("AI_TRADER_BARS_30M", 10000),
         ),
-        strategy=StrategySettings(
-            candidate_id=_get_int("AI_TRADER_CANDIDATE_ID", 56),
+        policy=PolicySettings(
+            active_candidates_file=Path(
+                _get("AI_TRADER_ACTIVE_CANDIDATES_FILE", str(REPORTS_DIR / "active_candidates.json"))
+            ),
+            max_active_candidates=_get_int("AI_TRADER_MAX_ACTIVE_CANDIDATES", 12),
+            decision_threshold=_get_float("AI_TRADER_DECISION_THRESHOLD", 0.15),
+            recent_bars_for_evaluation=_get_int("AI_TRADER_RECENT_BARS_FOR_EVALUATION", 400),
+            min_candidate_score=_get_float("AI_TRADER_MIN_CANDIDATE_SCORE", -10.0),
         ),
         risk=RiskSettings(
             max_position_usdt=_get_float("AI_TRADER_MAX_POSITION_USDT", 50.0),

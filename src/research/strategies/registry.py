@@ -1,7 +1,8 @@
-﻿from .breakout import get_breakout_candidates, apply_breakout
-from .mean_reversion import get_mean_reversion_candidates, apply_mean_reversion
-from .trend_pullback import get_trend_pullback_candidates, apply_trend_pullback
-from .atr_breakout import get_atr_breakout_candidates, apply_atr_breakout
+from .atr_breakout import apply_atr_breakout, get_atr_breakout_candidates
+from .breakout import apply_breakout, get_breakout_candidates
+from .mean_reversion import apply_mean_reversion, get_mean_reversion_candidates
+from .momentum_continuation import apply_momentum_continuation, get_momentum_continuation_candidates
+from .trend_pullback import apply_trend_pullback, get_trend_pullback_candidates
 
 STRATEGY_REGISTRY = {
     "breakout": {
@@ -19,5 +20,9 @@ STRATEGY_REGISTRY = {
     "atr_breakout": {
         "apply": apply_atr_breakout,
         "generate": get_atr_breakout_candidates,
+    },
+    "momentum_continuation": {
+        "apply": apply_momentum_continuation,
+        "generate": get_momentum_continuation_candidates,
     },
 }

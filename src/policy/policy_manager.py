@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 SOFT_SIGNAL_LOOKBACK_BARS = 8
-SOFT_SIGNAL_WEIGHT_FACTOR = 0.15
+SOFT_SIGNAL_WEIGHT_FACTOR = 0.12
+ACTIVITY_TARGET_SIGNALS = 3
+COMPATIBLE_REGIME_FACTOR = 0.75
+FALLBACK_REGIME_FACTOR = 0.5
+DOMINANT_DIRECTION_FACTOR = 0.85
+NEUTRAL_DIRECTION_FACTOR = 1.0
+
 
 import pandas as pd
 
@@ -129,7 +135,44 @@ class PolicyManager:
             filtered.append(candidate)
         return filtered
 
-    def _run_candidate_vote(self, scoped: pd.DataFrame, candidate: dict[str, Any], market_regime: str) -> dict[str, Any] | None:
+    def _regime_factor(self, regime_tag: str, market_regime: str, fallback: bool = False) -> float:
+        regime_tag = str(regime_tag or "all")
+        market_regime = str(market_regime or "flat")
+        if regime_tag == market_regime:
+            return 1.0
+        if fallback:
+            return FALLBACK_REGIME_FACTOR
+        if self._candidate_matches_regime(regime_tag, market_regime):
+            return COMPATIBLE_REGIME_FACTOR
+        return 0.0
+
+    def _activity_factor(self, recent_signals_short: int, recent_signals: int, bars_since_last_entry: int | None, bars_since_last_position: int | None) -> float:
+        # recent true entries dominate; fresh positions keep some influence; silent candidates fade naturally.
+        entry_component = min(1.0, recent_signals_short / ACTIVITY_TARGET_SIGNALS) if recent_signals_short > 0 else 0.0
+        recent_component = min(1.0, recent_signals / max(8, ACTIVITY_TARGET_SIGNALS * 2)) if recent_signals > 0 else 0.0
+        recency_bonus = 0.0
+        if bars_since_last_entry is not None and bars_since_last_entry <= SOFT_SIGNAL_LOOKBACK_BARS:
+            recency_bonus = max(recency_bonus, 0.35)
+        if bars_since_last_position is not None and bars_since_last_position <= min(5, SOFT_SIGNAL_LOOKBACK_BARS):
+            recency_bonus = max(recency_bonus, 0.2)
+        return min(1.0, max(entry_component, recent_component, recency_bonus))
+
+    def _direction_factor(self, direction: str, direction_bias: str | None) -> float:
+        direction = str(direction or "").lower()
+        if not direction_bias:
+            return NEUTRAL_DIRECTION_FACTOR
+        if direction == direction_bias:
+            return DOMINANT_DIRECTION_FACTOR
+        return NEUTRAL_DIRECTION_FACTOR
+
+    def _run_candidate_vote(
+        self,
+        scoped: pd.DataFrame,
+        candidate: dict[str, Any],
+        market_regime: str,
+        direction_bias: str | None = None,
+        fallback: bool = False,
+    ) -> dict[str, Any] | None:
         df_signal = apply_candidate(scoped, candidate)
         if df_signal.empty:
             return None
@@ -154,23 +197,25 @@ class PolicyManager:
 
         raw_score = float(candidate.get("score", 0.0))
         base_weight = max(0.0, raw_score)
-        if str(candidate.get("regime_tag", "all")) == market_regime:
-            base_weight *= 1.15
-        hard_weight = base_weight * (1.1 if entry_signal != 0 else 1.0)
+        regime_factor = self._regime_factor(str(candidate.get("regime_tag", "all")), market_regime, fallback=fallback)
+        activity_factor = self._activity_factor(recent_signals_short, recent_signals, bars_since_last_entry, bars_since_last_position)
+        direction_factor = self._direction_factor(str(candidate.get("direction", "")), direction_bias)
+        effective_weight = base_weight * regime_factor * activity_factor * direction_factor
+        hard_weight = effective_weight * (1.1 if entry_signal != 0 else 1.0)
 
         soft_direction = 0
         soft_reason = None
         soft_weight = 0.0
-        if desired_position == 0 and entry_signal == 0:
+        if desired_position == 0 and entry_signal == 0 and effective_weight > 0:
             if recent_signals_short > 0 and bars_since_last_entry is not None and bars_since_last_entry <= SOFT_SIGNAL_LOOKBACK_BARS:
                 last_recent_nonzero = int(entry_series[entry_series != 0].iloc[-1])
                 soft_direction = 1 if last_recent_nonzero > 0 else -1
-                soft_weight = max(0.05, base_weight * SOFT_SIGNAL_WEIGHT_FACTOR)
+                soft_weight = effective_weight * SOFT_SIGNAL_WEIGHT_FACTOR
                 soft_reason = f"recent_entry_within_{SOFT_SIGNAL_LOOKBACK_BARS}_bars"
             elif bars_since_last_position is not None and bars_since_last_position <= min(5, SOFT_SIGNAL_LOOKBACK_BARS):
                 last_recent_position = int(position_series[position_series != 0].iloc[-1])
                 soft_direction = 1 if last_recent_position > 0 else -1
-                soft_weight = max(0.03, base_weight * (SOFT_SIGNAL_WEIGHT_FACTOR * 0.75))
+                soft_weight = effective_weight * (SOFT_SIGNAL_WEIGHT_FACTOR * 0.75)
                 soft_reason = "recent_position_decay"
 
         return {
@@ -182,6 +227,11 @@ class PolicyManager:
             "entry_signal": entry_signal,
             "desired_position": desired_position,
             "weight": round(hard_weight, 4),
+            "base_weight": round(base_weight, 4),
+            "effective_weight": round(effective_weight, 4),
+            "activity_factor": round(activity_factor, 4),
+            "regime_factor": round(regime_factor, 4),
+            "direction_factor": round(direction_factor, 4),
             "recent_signals": recent_signals,
             "recent_signals_short": recent_signals_short,
             "bars_since_last_entry": bars_since_last_entry,
@@ -284,9 +334,23 @@ class PolicyManager:
             for c in candidates_for_regime[:10]
         ]
 
+        direction_counts = {"long": 0, "short": 0}
+        for candidate in candidates_for_regime:
+            direction = str(candidate.get("direction", "")).lower()
+            if direction in direction_counts:
+                direction_counts[direction] += 1
+        direction_bias = None
+        if direction_counts["long"] >= direction_counts["short"] * 2 and direction_counts["long"] >= 3:
+            direction_bias = "long"
+        elif direction_counts["short"] >= direction_counts["long"] * 2 and direction_counts["short"] >= 3:
+            direction_bias = "short"
+
+        diagnostics["direction_counts"] = direction_counts
+        diagnostics["direction_bias"] = direction_bias
+
         primary_vote_rows: list[dict[str, Any]] = []
         for candidate in candidates_for_regime:
-            vote_row = self._run_candidate_vote(scoped, candidate, market_regime)
+            vote_row = self._run_candidate_vote(scoped, candidate, market_regime, direction_bias=direction_bias, fallback=False)
             if vote_row is not None:
                 primary_vote_rows.append(vote_row)
 
@@ -294,12 +358,13 @@ class PolicyManager:
         diagnostics["evaluated_primary"] = len(primary_vote_rows)
         diagnostics["selected_primary"] = len(selected_candidates)
         diagnostics["primary_vote_breakdown"] = vote_breakdown
+        diagnostics["primary_effective_weight_total"] = round(sum(float(r.get("effective_weight", 0.0)) for r in primary_vote_rows), 4)
 
         if not selected_candidates:
             fallback_candidates = active_candidates[: min(5, len(active_candidates))]
             fallback_vote_rows: list[dict[str, Any]] = []
             for candidate in fallback_candidates:
-                vote_row = self._run_candidate_vote(scoped, candidate, market_regime)
+                vote_row = self._run_candidate_vote(scoped, candidate, market_regime, direction_bias=direction_bias, fallback=True)
                 if vote_row is not None:
                     fallback_vote_rows.append(vote_row)
 
@@ -319,6 +384,7 @@ class PolicyManager:
             diagnostics["evaluated_fallback"] = len(fallback_vote_rows)
             diagnostics["selected_fallback"] = len(fallback_selected)
             diagnostics["fallback_vote_breakdown"] = fallback_breakdown
+            diagnostics["fallback_effective_weight_total"] = round(sum(float(r.get("effective_weight", 0.0)) for r in fallback_vote_rows), 4)
 
             if fallback_selected:
                 diagnostics["fallback_used"] = True
@@ -340,6 +406,7 @@ class PolicyManager:
                 "soft_short_votes": 0,
             }
             diagnostics["fallback_candidates"] = []
+            diagnostics["fallback_effective_weight_total"] = 0.0
 
         total_votes = vote_long + vote_short
         confidence = 0.0 if total_votes <= 0 else abs(vote_long - vote_short) / total_votes
@@ -365,6 +432,7 @@ class PolicyManager:
             "vote_short": round(vote_short, 4),
             "total_votes": round(total_votes, 4),
             "imbalance": round(abs(vote_long - vote_short), 4),
+            "direction_bias": direction_bias,
         }
 
         last_row = scoped.iloc[-1]

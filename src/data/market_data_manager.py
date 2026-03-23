@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import os
 import sys
 
@@ -10,14 +11,18 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from config.settings import AppSettings, load_settings
+from config.settings import AppSettings, REPORTS_DIR, load_settings
 from data.bybit_loader import (
     assert_fresh_enough,
+    compute_freshness,
     download_and_save,
     fetch_runtime_market_data,
     get_data_path,
 )
 from processing.data_processor import process_frames
+
+
+MARKET_DATA_STATUS_PATH = REPORTS_DIR / "market_data_status.json"
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -36,54 +41,115 @@ def _skip_data_refresh() -> bool:
     return str(os.getenv("AI_TRADER_SKIP_DATA_REFRESH", "0")).lower() in {"1", "true", "yes"}
 
 
+def _freshness_payload(df: pd.DataFrame, interval: str) -> dict:
+    freshness = compute_freshness(df)
+    return {
+        "interval": str(interval),
+        "rows": int(len(df)),
+        "last_open_utc": str(freshness["last_open_utc"]),
+        "age_seconds": round(float(freshness["age"].total_seconds()), 2),
+    }
+
+
+def _write_market_data_status(status: dict) -> None:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    MARKET_DATA_STATUS_PATH.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _ensure_single_interval_current(
     *,
     settings: AppSettings,
     interval: str,
     total: int,
-) -> None:
+) -> dict:
     path = get_data_path(settings.data.symbol, interval)
+    skip_refresh = _skip_data_refresh()
+    refresh_before_run = bool(getattr(settings.data, "refresh_before_run", True)) and not skip_refresh
+    allow_stale_fallback = bool(getattr(settings.data, "allow_stale_fallback", True))
+
+    status: dict = {
+        "symbol": settings.data.symbol,
+        "interval": str(interval),
+        "path": str(path),
+        "total_requested": int(total),
+        "refresh_requested": bool(refresh_before_run),
+        "skip_refresh_flag": bool(skip_refresh),
+        "source": "unknown",
+    }
+
+    if refresh_before_run:
+        try:
+            df, _, _ = download_and_save(
+                symbol=settings.data.symbol,
+                interval=interval,
+                total=total,
+                category=settings.data.category,
+                settings=settings,
+            )
+            status["source"] = "exchange_refresh"
+            status["freshness"] = _freshness_payload(df, interval)
+            status["ok"] = True
+            return status
+        except Exception as exc:
+            status["refresh_error"] = str(exc)
+            if not allow_stale_fallback:
+                raise RuntimeError(f"market_data_refresh_failed_no_fallback:{interval}:{exc}") from exc
 
     try:
         df = _read_csv(path)
-        if _skip_data_refresh():
-            return
         assert_fresh_enough(df, interval_minutes=int(interval), multiplier=2)
-        return
-    except (FileNotFoundError, RuntimeError):
-        pass
+        status["source"] = "local_fallback"
+        status["freshness"] = _freshness_payload(df, interval)
+        status["ok"] = True
+        return status
+    except (FileNotFoundError, RuntimeError) as exc:
+        status["fallback_error"] = str(exc)
 
     try:
-        download_and_save(
+        df, _, _ = download_and_save(
             symbol=settings.data.symbol,
             interval=interval,
             total=total,
             category=settings.data.category,
             settings=settings,
         )
-    except Exception:
-        if path.exists():
-            return
-        raise
+        status["source"] = "exchange_recovery"
+        status["freshness"] = _freshness_payload(df, interval)
+        status["ok"] = True
+        return status
+    except Exception as exc:
+        status["recovery_error"] = str(exc)
+        raise RuntimeError(f"market_data_unavailable:{interval}:{exc}") from exc
 
 
 def ensure_local_market_data_current(
     settings: AppSettings | None = None,
-) -> None:
+) -> dict:
     if settings is None:
         settings = load_settings()
 
-    _ensure_single_interval_current(
+    status = {
+        "symbol": settings.data.symbol,
+        "refresh_before_run": bool(getattr(settings.data, "refresh_before_run", True)),
+        "skip_refresh_flag": bool(_skip_data_refresh()),
+        "allow_stale_fallback": bool(getattr(settings.data, "allow_stale_fallback", True)),
+        "intervals": {},
+    }
+
+    status["intervals"][settings.data.interval_main] = _ensure_single_interval_current(
         settings=settings,
         interval=settings.data.interval_main,
         total=settings.data.bars_15m,
     )
 
-    _ensure_single_interval_current(
+    status["intervals"][settings.data.interval_htf] = _ensure_single_interval_current(
         settings=settings,
         interval=settings.data.interval_htf,
         total=settings.data.bars_30m,
     )
+
+    _write_market_data_status(status)
+    return status
 
 
 def load_local_market_data(
@@ -115,7 +181,7 @@ def get_processed_market_data(
         df_15=df_15,
         df_30=df_30,
         settings=settings,
-        enforce_freshness=not _skip_data_refresh(),
+        enforce_freshness=True,
     )
 
 

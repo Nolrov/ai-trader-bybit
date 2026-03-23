@@ -288,6 +288,55 @@ def build_active_candidates(df_res: pd.DataFrame, limit: int = 20) -> list[dict[
     return candidates
 
 
+
+
+def assign_candidate_state(row: pd.Series, active_keys: set[str]) -> str:
+    key = str(row.get("candidate_key", ""))
+    if key in active_keys:
+        return "active"
+    if bool(row.get("is_valid", False)):
+        return "validated"
+    if bool(row.get("is_promising", False)):
+        return "dormant"
+    return "rejected_on_current_window"
+
+
+def build_strategy_state_table(df_res: pd.DataFrame, active_candidates: list[dict[str, Any]]) -> pd.DataFrame:
+    state_df = df_res.copy()
+    active_keys = {str(item.get("candidate_key", "")) for item in active_candidates}
+    state_df["bank_state"] = state_df.apply(lambda row: assign_candidate_state(row, active_keys), axis=1)
+    state_df["in_active_bank"] = state_df["candidate_key"].astype(str).isin(active_keys)
+    state_df["library_state"] = "library"
+    state_df["status_reason"] = state_df.apply(
+        lambda row: "selected_for_active_bank"
+        if row["bank_state"] == "active"
+        else "passed_validation"
+        if row["bank_state"] == "validated"
+        else "promising_but_not_selected"
+        if row["bank_state"] == "dormant"
+        else str(row.get("reasons", "")),
+        axis=1,
+    )
+    return state_df
+
+
+def build_strategy_bank_summary(state_df: pd.DataFrame) -> dict[str, Any]:
+    state_counts = state_df["bank_state"].value_counts().to_dict()
+    family_summary = (
+        state_df.groupby(["family", "direction", "bank_state"], dropna=False)
+        .size()
+        .reset_index(name="count")
+        .sort_values(["family", "direction", "count"], ascending=[True, True, False])
+    )
+    return {
+        "library_candidates": int(len(state_df)),
+        "state_counts": {str(k): int(v) for k, v in state_counts.items()},
+        "active_families": sorted(state_df.loc[state_df["bank_state"] == "active", "family"].astype(str).unique().tolist()),
+        "active_directions": sorted(state_df.loc[state_df["bank_state"] == "active", "direction"].astype(str).unique().tolist()),
+        "family_state_breakdown": family_summary.to_dict(orient="records"),
+    }
+
+
 def run_alpha_miner() -> pd.DataFrame:
     settings = load_settings()
     df = prepare_pa_features(get_processed_market_data(settings))
@@ -359,7 +408,16 @@ def run_alpha_miner() -> pd.DataFrame:
     with (REPORTS_DIR / "active_candidates.json").open("w", encoding="utf-8") as f:
         json.dump(active_candidates, f, ensure_ascii=False, indent=2)
 
+    state_df = build_strategy_state_table(df_res, active_candidates)
+    state_df.to_csv(REPORTS_DIR / "strategy_bank_states.csv", index=False)
+    summary = build_strategy_bank_summary(state_df)
+    with (REPORTS_DIR / "strategy_bank_summary.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
     print(df_res[["candidate_key", "family", "direction", "regime_tag", "score", "test_return", "test_sharpe", "test_trades", "is_valid"]].head(25))
+    print()
+    print("=== Strategy bank states ===")
+    print(state_df["bank_state"].value_counts().to_string())
     return df_res
 
 

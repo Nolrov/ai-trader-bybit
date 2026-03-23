@@ -35,6 +35,8 @@ class DataSettings:
     interval_htf: str = "30"
     bars_15m: int = 15000
     bars_30m: int = 10000
+    refresh_before_run: bool = True
+    allow_stale_fallback: bool = True
 
 
 @dataclass
@@ -88,6 +90,8 @@ def load_settings() -> AppSettings:
             symbol=_get("AI_TRADER_SYMBOL", "BTCUSDT"),
             bars_15m=_get_int("AI_TRADER_BARS_15M", 15000),
             bars_30m=_get_int("AI_TRADER_BARS_30M", 10000),
+            refresh_before_run=_get_bool("AI_TRADER_REFRESH_BEFORE_RUN", True),
+            allow_stale_fallback=_get_bool("AI_TRADER_ALLOW_STALE_FALLBACK", True),
         ),
         policy=PolicySettings(
             active_candidates_file=Path(

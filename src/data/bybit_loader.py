@@ -19,7 +19,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
 from config.settings import AppSettings, load_settings  # noqa: E402
-from data.candle_utils import filter_to_closed_candles, inspect_last_candle_status  # noqa: E402
+from data.candle_utils import inspect_last_candle_status, prepare_closed_analytics_frame  # noqa: E402
 
 
 HTTP_TIMEOUT_SECONDS = 20
@@ -257,22 +257,25 @@ def print_validation_report(report: dict) -> None:
     print(f"Rows after: {report['rows_after']}")
 
 
-def print_freshness_report(df: pd.DataFrame, symbol: str, interval: str) -> None:
-    if df.empty:
+def print_freshness_report(raw_df: pd.DataFrame, analytics_df: pd.DataFrame, symbol: str, interval: str, closed_status: dict) -> None:
+    if raw_df.empty:
         print("No data returned.")
         return
 
-    freshness = compute_freshness(df)
-    candle_status = inspect_last_candle_status(df, interval=interval, now_utc=freshness["now_utc"])
+    freshness = compute_freshness(raw_df)
+    raw_status = inspect_last_candle_status(raw_df, interval=interval, now_utc=freshness["now_utc"])
+    closed_last_open = pd.to_datetime(analytics_df["timestamp"].max(), utc=True) if not analytics_df.empty else None
 
     print()
     print(f"=== Freshness report: {symbol} {interval}m ===")
     print(f"Now UTC           : {freshness['now_utc']}")
-    print(f"Last candle open  : {freshness['last_open_utc']}")
-    print(f"Last candle MSK   : {freshness['last_open_utc'].tz_convert('Europe/Moscow')}")
+    print(f"Raw last open     : {raw_status['last_open_utc']}")
+    print(f"Raw last open MSK : {raw_status['last_open_utc'].tz_convert('Europe/Moscow')}")
     print(f"Age               : {freshness['age']}")
-    print(f"Expected close    : {candle_status['expected_close_utc']}")
-    print(f"Last bar closed   : {candle_status['is_last_bar_closed']}")
+    print(f"Expected close    : {raw_status['expected_close_utc']}")
+    print(f"Raw last closed   : {raw_status['is_last_bar_closed']}")
+    print(f"Closed last open  : {closed_last_open}")
+    print(f"Dropped open bars : {closed_status['bars_dropped_as_incomplete']}")
 
 
 def save_data(df: pd.DataFrame, output_path: Path) -> Path:
@@ -366,7 +369,7 @@ def download_and_save(
     if settings is None:
         settings = load_settings()
 
-    clean_df, report, _ = fetch_klines_prepared(
+    raw_df, report, _ = fetch_klines_prepared(
         symbol=symbol,
         interval=interval,
         total=total,
@@ -376,15 +379,17 @@ def download_and_save(
         enforce_freshness=True,
     )
 
-    print(f"\n=== {symbol} {interval}m tail ===")
-    print(clean_df[["timestamp_msk", "open", "high", "low", "close"]].tail())
+    analytics_df, closed_status = prepare_closed_analytics_frame(raw_df, interval=interval)
+
+    print(f"\n=== {symbol} {interval}m tail (closed only) ===")
+    print(analytics_df[["timestamp_msk", "open", "high", "low", "close"]].tail())
 
     print_validation_report(report)
-    print_freshness_report(clean_df, symbol=symbol, interval=interval)
+    print_freshness_report(raw_df, analytics_df, symbol=symbol, interval=interval, closed_status=closed_status)
 
     output_path = get_data_path(symbol=symbol, interval=interval)
-    save_data(clean_df, output_path)
-    return clean_df, report, output_path
+    save_data(analytics_df, output_path)
+    return analytics_df, report, output_path
 
 
 def refresh_project_market_data(settings: AppSettings | None = None):

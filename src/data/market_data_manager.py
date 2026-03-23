@@ -19,7 +19,7 @@ from data.bybit_loader import (
     fetch_runtime_market_data,
     get_data_path,
 )
-from data.candle_utils import filter_to_closed_candles, inspect_last_candle_status
+from data.candle_utils import inspect_last_candle_status, prepare_closed_analytics_frame
 from processing.data_processor import process_frames
 
 
@@ -46,14 +46,18 @@ def _skip_data_refresh() -> bool:
 
 def _freshness_payload(df: pd.DataFrame, interval: str) -> dict:
     freshness = compute_freshness(df)
-    candle_status = inspect_last_candle_status(df, interval=interval, now_utc=freshness["now_utc"])
+    raw_status = inspect_last_candle_status(df, interval=interval, now_utc=freshness["now_utc"])
+    analytics_df, closed_status = prepare_closed_analytics_frame(df, interval=interval, now_utc=freshness["now_utc"])
     return {
         "interval": str(interval),
-        "rows": int(len(df)),
-        "last_open_utc": str(freshness["last_open_utc"]),
+        "raw_rows": int(len(df)),
+        "analytics_rows": int(len(analytics_df)),
+        "raw_last_open_utc": str(freshness["last_open_utc"]),
+        "analytics_last_open_utc": str(pd.to_datetime(analytics_df["timestamp"].max(), utc=True)),
         "age_seconds": round(float(freshness["age"].total_seconds()), 2),
-        "expected_close_utc": str(candle_status["expected_close_utc"]),
-        "is_last_bar_closed": bool(candle_status["is_last_bar_closed"]),
+        "expected_close_utc": str(raw_status["expected_close_utc"]),
+        "is_last_bar_closed": bool(raw_status["is_last_bar_closed"]),
+        "bars_dropped_as_incomplete": int(closed_status["bars_dropped_as_incomplete"]),
     }
 
 
@@ -94,7 +98,7 @@ def _ensure_single_interval_current(
             )
             status["source"] = "exchange_refresh"
             status["freshness"] = _freshness_payload(df, interval)
-            _, closed_status = filter_to_closed_candles(df, interval)
+            _, closed_status = prepare_closed_analytics_frame(df, interval)
             status["closed_candle_filter"] = closed_status
             status["ok"] = True
             return status
@@ -108,7 +112,7 @@ def _ensure_single_interval_current(
         assert_fresh_enough(df, interval_minutes=int(interval), multiplier=2)
         status["source"] = "local_fallback"
         status["freshness"] = _freshness_payload(df, interval)
-        _, closed_status = filter_to_closed_candles(df, interval)
+        _, closed_status = prepare_closed_analytics_frame(df, interval)
         status["closed_candle_filter"] = closed_status
         status["ok"] = True
         return status
@@ -125,7 +129,7 @@ def _ensure_single_interval_current(
         )
         status["source"] = "exchange_recovery"
         status["freshness"] = _freshness_payload(df, interval)
-        _, closed_status = filter_to_closed_candles(df, interval)
+        _, closed_status = prepare_closed_analytics_frame(df, interval)
         status["closed_candle_filter"] = closed_status
         status["ok"] = True
         return status
@@ -180,8 +184,8 @@ def load_local_market_data(
     df_30 = _read_csv(path_30)
 
     if closed_only:
-        df_15, _ = filter_to_closed_candles(df_15, settings.data.interval_main)
-        df_30, _ = filter_to_closed_candles(df_30, settings.data.interval_htf)
+        df_15, _ = prepare_closed_analytics_frame(df_15, settings.data.interval_main)
+        df_30, _ = prepare_closed_analytics_frame(df_30, settings.data.interval_htf)
 
     return df_15, df_30
 
@@ -223,7 +227,7 @@ def get_runtime_market_frames(
     )
 
     if closed_only:
-        df_15, _ = filter_to_closed_candles(df_15, settings.data.interval_main)
-        df_30, _ = filter_to_closed_candles(df_30, settings.data.interval_htf)
+        df_15, _ = prepare_closed_analytics_frame(df_15, settings.data.interval_main)
+        df_30, _ = prepare_closed_analytics_frame(df_30, settings.data.interval_htf)
 
     return df_15, df_30

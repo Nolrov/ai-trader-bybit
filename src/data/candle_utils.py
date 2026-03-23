@@ -53,22 +53,30 @@ def filter_to_closed_candles(
             "last_closed_open_msk": None,
         }
 
-    status = inspect_last_candle_status(df, interval=interval, now_utc=now_utc)
-    rows_before = int(len(df))
-    filtered = df.copy()
+    working = df.sort_values("timestamp").reset_index(drop=True).copy()
+    status = inspect_last_candle_status(working, interval=interval, now_utc=now_utc)
+    rows_before = int(len(working))
     if not status["is_last_bar_closed"]:
-        filtered = filtered.iloc[:-1].copy()
+        working = working.iloc[:-1].copy()
 
-    if filtered.empty:
+    if working.empty:
         raise RuntimeError(f"no_closed_candles_after_filter: interval={interval}")
 
-    filtered = filtered.sort_values("timestamp").reset_index(drop=True)
-    last_closed_open_utc = pd.to_datetime(filtered["timestamp"].max(), utc=True)
+    last_closed_open_utc = pd.to_datetime(working["timestamp"].max(), utc=True)
     status["rows_before"] = rows_before
-    status["rows_after"] = int(len(filtered))
+    status["rows_after"] = int(len(working))
     status["last_closed_open_utc"] = str(last_closed_open_utc)
     status["last_closed_open_msk"] = str(last_closed_open_utc.tz_convert("Europe/Moscow"))
     status["last_open_utc"] = str(status["last_open_utc"])
     status["expected_close_utc"] = str(status["expected_close_utc"])
     status["now_utc"] = str(status["now_utc"])
-    return filtered, status
+    return working, status
+
+
+def prepare_closed_analytics_frame(
+    df: pd.DataFrame,
+    interval: str | int,
+    now_utc: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    filtered, status = filter_to_closed_candles(df, interval=interval, now_utc=now_utc)
+    return filtered.sort_values("timestamp").reset_index(drop=True), status

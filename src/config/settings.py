@@ -43,6 +43,7 @@ class PolicySettings:
     max_active_candidates: int = 12
     decision_threshold: float = 0.15
     recent_bars_for_evaluation: int = 400
+    live_window_bars: int = 800
     min_candidate_score: float = -10.0
 
 
@@ -95,6 +96,7 @@ def load_settings() -> AppSettings:
             max_active_candidates=_get_int("AI_TRADER_MAX_ACTIVE_CANDIDATES", 12),
             decision_threshold=_get_float("AI_TRADER_DECISION_THRESHOLD", 0.15),
             recent_bars_for_evaluation=_get_int("AI_TRADER_RECENT_BARS_FOR_EVALUATION", 400),
+            live_window_bars=_get_int("AI_TRADER_LIVE_WINDOW_BARS", 800),
             min_candidate_score=_get_float("AI_TRADER_MIN_CANDIDATE_SCORE", -10.0),
         ),
         risk=RiskSettings(

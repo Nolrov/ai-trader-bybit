@@ -33,6 +33,24 @@ QUALITY_GATE = {
 }
 
 
+def _compute_confirmed_swings(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    high = df["high_15m"]
+    low = df["low_15m"]
+
+    prev_bar_confirmed_swing_high = (
+        (high.shift(1) > high.shift(2))
+        & (high.shift(1) >= high)
+    )
+    prev_bar_confirmed_swing_low = (
+        (low.shift(1) < low.shift(2))
+        & (low.shift(1) <= low)
+    )
+
+    swing_high_price = high.shift(1).where(prev_bar_confirmed_swing_high)
+    swing_low_price = low.shift(1).where(prev_bar_confirmed_swing_low)
+    return swing_high_price, swing_low_price
+
+
 def prepare_pa_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -74,8 +92,7 @@ def prepare_pa_features(df: pd.DataFrame) -> pd.DataFrame:
     df["roc_4_15m"] = df["close_15m"].pct_change(4)
     df["roc_8_15m"] = df["close_15m"].pct_change(8)
 
-    df["swing_high_price"] = df["high_15m"].rolling(3, center=True).max().where(lambda s: s.eq(df["high_15m"]))
-    df["swing_low_price"] = df["low_15m"].rolling(3, center=True).min().where(lambda s: s.eq(df["low_15m"]))
+    df["swing_high_price"], df["swing_low_price"] = _compute_confirmed_swings(df)
     df["recent_swing_high"] = df["swing_high_price"].ffill()
     df["recent_swing_low"] = df["swing_low_price"].ffill()
     df["structure_high_10"] = df["high_15m"].rolling(10).max().shift(1)

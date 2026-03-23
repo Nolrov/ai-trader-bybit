@@ -28,7 +28,18 @@ def parse_args():
 
 def build_signal_snapshot(settings) -> dict:
     df = get_processed_market_data(settings)
+
+    live_window_bars = max(
+        int(settings.policy.live_window_bars),
+        int(settings.policy.recent_bars_for_evaluation) + 100,
+        300,
+    )
+    if len(df) > live_window_bars:
+        df = df.tail(live_window_bars).copy()
+
     df = prepare_pa_features(df)
+    if not df["timestamp"].is_monotonic_increasing:
+        raise RuntimeError("live_data_timestamp_order_invalid")
 
     policy_manager = PolicyManager(settings)
     decision = policy_manager.decide(df)
@@ -47,6 +58,9 @@ def build_signal_snapshot(settings) -> dict:
         "vote_short": decision.vote_short,
         "selected_candidates": decision.selected_candidates,
         "policy_diagnostics": decision.diagnostics,
+        "live_window_bars": len(df),
+        "live_window_start": str(df.iloc[0]["timestamp"]),
+        "live_window_end": str(df.iloc[-1]["timestamp"]),
     }
 
 
@@ -272,7 +286,8 @@ def run_cycle(settings, args, logger: RuntimeLogger):
         f"raw_signals={primary_breakdown.get('raw_long_signals', 0)}/{primary_breakdown.get('raw_short_signals', 0)} "
         f"soft_votes={primary_breakdown.get('soft_long_votes', 0)}/{primary_breakdown.get('soft_short_votes', 0)} "
         f"fallback={diagnostics.get('fallback_scope', 'n/a')}:{diagnostics.get('selected_fallback', 0)} "
-        f"fallback_raw={fallback_breakdown.get('raw_long_signals', 0)}/{fallback_breakdown.get('raw_short_signals', 0)}"
+        f"fallback_raw={fallback_breakdown.get('raw_long_signals', 0)}/{fallback_breakdown.get('raw_short_signals', 0)} "
+        f"live_window={snap.get('live_window_bars')} bars"
     )
 
     candidate_debug_rows = []
@@ -310,6 +325,9 @@ def run_cycle(settings, args, logger: RuntimeLogger):
             "active_candidates_count": snap["active_candidates_count"],
             "selected_candidates": snap["selected_candidates"],
             "policy_diagnostics": snap.get("policy_diagnostics", {}),
+            "live_window_bars": snap.get("live_window_bars"),
+            "live_window_start": snap.get("live_window_start"),
+            "live_window_end": snap.get("live_window_end"),
         },
     )
 

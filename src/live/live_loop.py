@@ -258,6 +258,8 @@ def run_cycle(settings, args, logger: RuntimeLogger):
     signal_ts = snap["timestamp"]
 
     diagnostics = snap.get("policy_diagnostics", {})
+    primary_breakdown = diagnostics.get("primary_vote_breakdown", {})
+    fallback_breakdown = diagnostics.get("fallback_vote_breakdown", {})
     logger.info(
         f"signal symbol={settings.data.symbol} time={signal_ts} "
         f"price={snap['price']} entry_signal={snap['entry_signal']} "
@@ -267,8 +269,30 @@ def run_cycle(settings, args, logger: RuntimeLogger):
         f"selected_candidates={snap['selected_candidates_count']}/{snap['active_candidates_count']} "
         f"bank={diagnostics.get('bank_loaded', 0)} dir_ok={diagnostics.get('after_direction_filter', 0)} "
         f"regime_ok={diagnostics.get('regime_candidates', 0)} primary={diagnostics.get('selected_primary', 0)} "
-        f"fallback={diagnostics.get('fallback_scope', 'n/a')}:{diagnostics.get('selected_fallback', 0)}"
+        f"raw_signals={primary_breakdown.get('raw_long_signals', 0)}/{primary_breakdown.get('raw_short_signals', 0)} "
+        f"soft_votes={primary_breakdown.get('soft_long_votes', 0)}/{primary_breakdown.get('soft_short_votes', 0)} "
+        f"fallback={diagnostics.get('fallback_scope', 'n/a')}:{diagnostics.get('selected_fallback', 0)} "
+        f"fallback_raw={fallback_breakdown.get('raw_long_signals', 0)}/{fallback_breakdown.get('raw_short_signals', 0)}"
     )
+
+    candidate_debug_rows = []
+    for row in snap.get("selected_candidates", []):
+        candidate_debug_rows.append(
+            f"{row.get('candidate_key')}:{row.get('family')}:{row.get('direction')} "
+            f"entry={row.get('entry_signal', 0)} pos={row.get('desired_position', 0)} "
+            f"soft={row.get('soft_direction', 0)} recent={row.get('recent_signals_short', 0)}"
+        )
+    if candidate_debug_rows:
+        logger.info("policy_selected " + " | ".join(candidate_debug_rows[:10]))
+    else:
+        evaluated = diagnostics.get("evaluated_candidates", [])
+        if evaluated:
+            preview = " | ".join(
+                f"{row.get('candidate_key')}:{row.get('family')}:{row.get('direction')}:{row.get('regime_tag')}"
+                for row in evaluated[:6]
+            )
+            logger.info(f"policy_evaluated {preview}")
+
     logger.event(
         "signal_snapshot",
         {

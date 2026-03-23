@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+SOFT_SIGNAL_LOOKBACK_BARS = 20
+SOFT_SIGNAL_WEIGHT_FACTOR = 0.35
+
 import pandas as pd
 
 from research.alpha_miner import apply_candidate
@@ -97,16 +100,43 @@ class PolicyManager:
             return None
 
         last = df_signal.iloc[-1]
+        entry_series = df_signal["entry_signal"].fillna(0).astype(int)
+        position_series = df_signal["position"].fillna(0).astype(int)
+
         desired_position = int(last.get("position", 0))
         entry_signal = int(last.get("entry_signal", 0))
-        recent_signals = int((df_signal.tail(100)["entry_signal"] != 0).sum())
+        recent_signals = int((entry_series.tail(100) != 0).sum())
+        recent_signals_short = int((entry_series.tail(SOFT_SIGNAL_LOOKBACK_BARS) != 0).sum())
+
+        last_entry_idx = entry_series[entry_series != 0].index
+        last_position_idx = position_series[position_series != 0].index
+        bars_since_last_entry = None
+        bars_since_last_position = None
+        if len(last_entry_idx) > 0:
+            bars_since_last_entry = int(len(df_signal) - 1 - df_signal.index.get_loc(last_entry_idx[-1]))
+        if len(last_position_idx) > 0:
+            bars_since_last_position = int(len(df_signal) - 1 - df_signal.index.get_loc(last_position_idx[-1]))
 
         raw_score = float(candidate.get("score", 0.0))
-        weight = max(0.1, raw_score)
+        base_weight = max(0.1, raw_score)
         if str(candidate.get("regime_tag", "all")) == market_regime:
-            weight *= 1.15
-        if entry_signal != 0:
-            weight *= 1.1
+            base_weight *= 1.15
+        hard_weight = base_weight * (1.1 if entry_signal != 0 else 1.0)
+
+        soft_direction = 0
+        soft_reason = None
+        soft_weight = 0.0
+        if desired_position == 0 and entry_signal == 0:
+            if recent_signals_short > 0 and bars_since_last_entry is not None and bars_since_last_entry <= SOFT_SIGNAL_LOOKBACK_BARS:
+                last_recent_nonzero = int(entry_series[entry_series != 0].iloc[-1])
+                soft_direction = 1 if last_recent_nonzero > 0 else -1
+                soft_weight = base_weight * SOFT_SIGNAL_WEIGHT_FACTOR
+                soft_reason = f"recent_entry_within_{SOFT_SIGNAL_LOOKBACK_BARS}_bars"
+            elif bars_since_last_position is not None and bars_since_last_position <= min(5, SOFT_SIGNAL_LOOKBACK_BARS):
+                last_recent_position = int(position_series[position_series != 0].iloc[-1])
+                soft_direction = 1 if last_recent_position > 0 else -1
+                soft_weight = base_weight * (SOFT_SIGNAL_WEIGHT_FACTOR * 0.75)
+                soft_reason = "recent_position_decay"
 
         return {
             "candidate_key": candidate.get("candidate_key"),
@@ -116,31 +146,66 @@ class PolicyManager:
             "score": raw_score,
             "entry_signal": entry_signal,
             "desired_position": desired_position,
-            "weight": round(weight, 4),
+            "weight": round(hard_weight, 4),
             "recent_signals": recent_signals,
+            "recent_signals_short": recent_signals_short,
+            "bars_since_last_entry": bars_since_last_entry,
+            "bars_since_last_position": bars_since_last_position,
+            "soft_direction": soft_direction,
+            "soft_weight": round(soft_weight, 4),
+            "soft_reason": soft_reason,
         }
 
-    def _aggregate_votes(self, vote_rows: list[dict[str, Any]]) -> tuple[float, float, int, list[dict[str, Any]]]:
+    def _aggregate_votes(self, vote_rows: list[dict[str, Any]]) -> tuple[float, float, int, list[dict[str, Any]], dict[str, Any]]:
         vote_long = 0.0
         vote_short = 0.0
         recent_signal_count = 0
         selected_candidates: list[dict[str, Any]] = []
+        raw_long_signals = 0
+        raw_short_signals = 0
+        hard_long_positions = 0
+        hard_short_positions = 0
+        soft_long_votes = 0
+        soft_short_votes = 0
 
         for row in vote_rows:
             recent_signal_count += int(row.get("recent_signals", 0))
             desired_position = int(row.get("desired_position", 0))
             entry_signal = int(row.get("entry_signal", 0))
             weight = float(row.get("weight", 0.0))
+            soft_direction = int(row.get("soft_direction", 0))
+            soft_weight = float(row.get("soft_weight", 0.0))
+
+            if entry_signal > 0:
+                raw_long_signals += 1
+            elif entry_signal < 0:
+                raw_short_signals += 1
 
             if desired_position > 0:
                 vote_long += weight
+                hard_long_positions += 1
             elif desired_position < 0:
                 vote_short += weight
+                hard_short_positions += 1
+            elif soft_direction > 0 and soft_weight > 0:
+                vote_long += soft_weight
+                soft_long_votes += 1
+            elif soft_direction < 0 and soft_weight > 0:
+                vote_short += soft_weight
+                soft_short_votes += 1
 
-            if desired_position != 0 or entry_signal != 0:
+            if desired_position != 0 or entry_signal != 0 or (soft_direction != 0 and soft_weight > 0):
                 selected_candidates.append(row)
 
-        return vote_long, vote_short, recent_signal_count, selected_candidates
+        breakdown = {
+            "raw_long_signals": raw_long_signals,
+            "raw_short_signals": raw_short_signals,
+            "hard_long_positions": hard_long_positions,
+            "hard_short_positions": hard_short_positions,
+            "soft_long_votes": soft_long_votes,
+            "soft_short_votes": soft_short_votes,
+        }
+        return vote_long, vote_short, recent_signal_count, selected_candidates, breakdown
 
     def decide(self, df: pd.DataFrame) -> PolicyDecision:
         if df.empty:
@@ -168,15 +233,27 @@ class PolicyManager:
             "fallback_scope": "regime" if regime_candidates else "global",
         }
 
+        diagnostics["evaluated_candidates"] = [
+            {
+                "candidate_key": c.get("candidate_key"),
+                "family": c.get("family"),
+                "direction": c.get("direction"),
+                "regime_tag": c.get("regime_tag"),
+                "score": round(float(c.get("score", 0.0)), 4),
+            }
+            for c in candidates_for_regime[:10]
+        ]
+
         primary_vote_rows: list[dict[str, Any]] = []
         for candidate in candidates_for_regime:
             vote_row = self._run_candidate_vote(scoped, candidate, market_regime)
             if vote_row is not None:
                 primary_vote_rows.append(vote_row)
 
-        vote_long, vote_short, recent_signal_count, selected_candidates = self._aggregate_votes(primary_vote_rows)
+        vote_long, vote_short, recent_signal_count, selected_candidates, vote_breakdown = self._aggregate_votes(primary_vote_rows)
         diagnostics["evaluated_primary"] = len(primary_vote_rows)
         diagnostics["selected_primary"] = len(selected_candidates)
+        diagnostics["primary_vote_breakdown"] = vote_breakdown
 
         if not selected_candidates:
             fallback_candidates = active_candidates[: min(5, len(active_candidates))]
@@ -186,11 +263,22 @@ class PolicyManager:
                 if vote_row is not None:
                     fallback_vote_rows.append(vote_row)
 
-            fallback_vote_long, fallback_vote_short, fallback_recent_signals, fallback_selected = self._aggregate_votes(
+            diagnostics["fallback_candidates"] = [
+                {
+                    "candidate_key": c.get("candidate_key"),
+                    "family": c.get("family"),
+                    "direction": c.get("direction"),
+                    "regime_tag": c.get("regime_tag"),
+                    "score": round(float(c.get("score", 0.0)), 4),
+                }
+                for c in fallback_candidates
+            ]
+            fallback_vote_long, fallback_vote_short, fallback_recent_signals, fallback_selected, fallback_breakdown = self._aggregate_votes(
                 fallback_vote_rows
             )
             diagnostics["evaluated_fallback"] = len(fallback_vote_rows)
             diagnostics["selected_fallback"] = len(fallback_selected)
+            diagnostics["fallback_vote_breakdown"] = fallback_breakdown
 
             if fallback_selected:
                 diagnostics["fallback_used"] = True
@@ -203,6 +291,15 @@ class PolicyManager:
         else:
             diagnostics["evaluated_fallback"] = 0
             diagnostics["selected_fallback"] = 0
+            diagnostics["fallback_vote_breakdown"] = {
+                "raw_long_signals": 0,
+                "raw_short_signals": 0,
+                "hard_long_positions": 0,
+                "hard_short_positions": 0,
+                "soft_long_votes": 0,
+                "soft_short_votes": 0,
+            }
+            diagnostics["fallback_candidates"] = []
 
         total_votes = vote_long + vote_short
         confidence = 0.0 if total_votes <= 0 else abs(vote_long - vote_short) / total_votes
@@ -223,6 +320,12 @@ class PolicyManager:
         diagnostics["total_votes"] = round(total_votes, 4)
         diagnostics["confidence"] = round(confidence, 4)
         diagnostics["decision"] = desired_position
+        diagnostics["confidence_breakdown"] = {
+            "vote_long": round(vote_long, 4),
+            "vote_short": round(vote_short, 4),
+            "total_votes": round(total_votes, 4),
+            "imbalance": round(abs(vote_long - vote_short), 4),
+        }
 
         last_row = scoped.iloc[-1]
         return PolicyDecision(

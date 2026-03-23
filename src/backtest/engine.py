@@ -5,30 +5,61 @@ import pandas as pd
 MAX_ABS_RET_15M = 0.30  # 30% за 15m для BTC — аварийный порог качества данных
 
 
-def apply_position_logic(entry_signal, hold_bars, direction):
-    if hold_bars <= 0:
-        raise ValueError("hold_bars must be > 0")
+def apply_position_logic(
+    entry_signal,
+    hold_bars=None,
+    direction="long",
+    exit_signal=None,
+    min_hold_bars=1,
+    max_hold_bars=None,
+):
+    if hold_bars is None and max_hold_bars is None:
+        raise ValueError("hold_bars or max_hold_bars must be provided")
+
+    if max_hold_bars is None:
+        max_hold_bars = hold_bars
+    if hold_bars is None:
+        hold_bars = max_hold_bars
+
+    max_hold_bars = int(max_hold_bars)
+    min_hold_bars = max(1, int(min_hold_bars))
+
+    if max_hold_bars <= 0:
+        raise ValueError("max_hold_bars must be > 0")
+    if min_hold_bars > max_hold_bars:
+        raise ValueError("min_hold_bars must be <= max_hold_bars")
+
+    entry_series = entry_signal.fillna(0).astype(int)
+    if exit_signal is None:
+        exit_series = pd.Series(0, index=entry_series.index, dtype="int8")
+    else:
+        exit_series = exit_signal.fillna(0).astype(int)
 
     position = []
     pos = 0
-    bars_left = 0
-    side = 1 if direction == "long" else -1
+    bars_in_trade = 0
+    side = 1 if str(direction).lower() == "long" else -1
 
-    for raw_signal in entry_signal.fillna(0).astype(int):
-        signal = 1 if raw_signal == 1 else 0
+    for raw_entry, raw_exit in zip(entry_series, exit_series, strict=False):
+        entry = 1 if raw_entry == 1 else 0
+        exit_now = 1 if raw_exit == 1 else 0
 
-        if pos == 0 and signal == 1:
-            pos = side
-            bars_left = hold_bars
-        elif pos != 0:
-            bars_left -= 1
-            if bars_left <= 0:
+        if pos == 0:
+            if entry == 1:
+                pos = side
+                bars_in_trade = 1
+        else:
+            allow_exit = bars_in_trade >= min_hold_bars
+            must_exit = bars_in_trade >= max_hold_bars
+            if must_exit or (allow_exit and exit_now == 1):
                 pos = 0
-                bars_left = 0
+                bars_in_trade = 0
+            else:
+                bars_in_trade += 1
 
         position.append(pos)
 
-    return pd.Series(position, index=entry_signal.index, dtype="int8")
+    return pd.Series(position, index=entry_series.index, dtype="int8")
 
 
 def _resolve_time_col(df: pd.DataFrame) -> str | None:

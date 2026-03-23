@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,17 @@ from research.strategies.atr_breakout import compute_atr
 from research.strategies.registry import STRATEGY_REGISTRY
 
 
+QUALITY_GATE = {
+    "min_test_return": 0.0,
+    "min_test_trades": 20,
+    "min_test_sharpe": 0.0,
+    "max_test_drawdown_abs": 8.0,
+    "max_train_test_gap": 5.0,
+    "min_train_return": -2.0,
+    "max_abs_return": 200.0,
+}
+
+
 def prepare_pa_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -29,9 +41,19 @@ def prepare_pa_features(df: pd.DataFrame) -> pd.DataFrame:
     df["body_ratio_15m"] = df["body_15m"] / df["range_15m"].replace(0, pd.NA)
     df["upper_wick_15m"] = df["high_15m"] - df[["open_15m", "close_15m"]].max(axis=1)
     df["lower_wick_15m"] = df[["open_15m", "close_15m"]].min(axis=1) - df["low_15m"]
+    df["upper_wick_ratio_15m"] = df["upper_wick_15m"] / df["range_15m"].replace(0, pd.NA)
+    df["lower_wick_ratio_15m"] = df["lower_wick_15m"] / df["range_15m"].replace(0, pd.NA)
+    df["close_location_15m"] = (df["close_15m"] - df["low_15m"]) / df["range_15m"].replace(0, pd.NA)
+    df["range_pct_15m"] = df["range_15m"] / df["close_15m"].replace(0, pd.NA)
+    df["range_median_20"] = df["range_15m"].rolling(20).median()
+    df["range_pct_median_20"] = df["range_pct_15m"].rolling(20).median()
+    df["range_width_pct_20"] = (
+        (df["high_15m"].rolling(20).max() - df["low_15m"].rolling(20).min()) / df["close_15m"].replace(0, pd.NA)
+    )
 
     df["bullish_15m"] = df["close_15m"] > df["open_15m"]
     df["bearish_15m"] = df["close_15m"] < df["open_15m"]
+    df["inside_bar_15m"] = (df["high_15m"] <= df["high_15m"].shift(1)) & (df["low_15m"] >= df["low_15m"].shift(1))
 
     df["ret_15m"] = df["close_15m"].pct_change()
     df["ret_mean_20"] = df["ret_15m"].rolling(20).mean()
@@ -52,8 +74,16 @@ def prepare_pa_features(df: pd.DataFrame) -> pd.DataFrame:
     df["roc_4_15m"] = df["close_15m"].pct_change(4)
     df["roc_8_15m"] = df["close_15m"].pct_change(8)
 
-    df["volatility_median_50"] = df["volatility_15m"].rolling(50).median()
+    df["swing_high_price"] = df["high_15m"].rolling(3, center=True).max().where(lambda s: s.eq(df["high_15m"]))
+    df["swing_low_price"] = df["low_15m"].rolling(3, center=True).min().where(lambda s: s.eq(df["low_15m"]))
+    df["recent_swing_high"] = df["swing_high_price"].ffill()
+    df["recent_swing_low"] = df["swing_low_price"].ffill()
+    df["structure_high_10"] = df["high_15m"].rolling(10).max().shift(1)
+    df["structure_low_10"] = df["low_15m"].rolling(10).min().shift(1)
+    df["structure_high_20"] = df["high_15m"].rolling(20).max().shift(1)
+    df["structure_low_20"] = df["low_15m"].rolling(20).min().shift(1)
 
+    df["volatility_median_50"] = df["volatility_15m"].rolling(50).median()
     df["regime_high_vol"] = (df["volatility_15m"] > df["volatility_median_50"]).astype(int)
     df["regime_trend"] = (df["ema_trend_strength_30m"] > 0.004).astype(int)
     df["regime_flat"] = (df["regime_trend"] == 0).astype(int)
@@ -69,6 +99,10 @@ def split_df(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     out = dict(candidate)
     out.setdefault("regime_tag", "all")
+    out.setdefault("min_hold_bars", 1)
+    out.setdefault("hold_bars", out.get("max_hold_bars", 6))
+    out.setdefault("max_hold_bars", out.get("hold_bars", 6))
+    out.setdefault("exit_style", "time_stop")
     encoded = json.dumps(out, sort_keys=True, ensure_ascii=False)
     out["candidate_key"] = hashlib.md5(encoded.encode("utf-8")).hexdigest()[:12]
     return out
@@ -80,82 +114,144 @@ def apply_candidate(df: pd.DataFrame, candidate: dict) -> pd.DataFrame:
     func = STRATEGY_REGISTRY[family]["apply"]
 
     df = func(df.copy(), normalized_candidate)
+    if "entry_signal" not in df.columns:
+        raise ValueError(f"strategy_apply_missing_entry_signal:{family}")
+    if "exit_signal" not in df.columns:
+        df["exit_signal"] = 0
+
     df["position"] = apply_position_logic(
         df["entry_signal"],
-        normalized_candidate["hold_bars"],
+        normalized_candidate.get("hold_bars"),
         normalized_candidate["direction"],
+        exit_signal=df["exit_signal"],
+        min_hold_bars=normalized_candidate.get("min_hold_bars", 1),
+        max_hold_bars=normalized_candidate.get("max_hold_bars", normalized_candidate.get("hold_bars", 6)),
     )
     return df
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if value is None or pd.isna(value):
+        return default
+    return float(value)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    if value is None or pd.isna(value):
+        return default
+    return int(value)
 
 
 def classify_candidate(train_m: dict, test_m: dict) -> tuple[bool, bool, list[str]]:
     reasons: list[str] = []
 
-    train_return = train_m["total_return_pct"]
-    test_return = test_m["total_return_pct"]
-    test_sharpe = test_m["sharpe_approx"]
-    test_dd = test_m["max_drawdown_pct"]
-    test_trades = test_m["trades"]
+    train_return = _safe_float(train_m.get("total_return_pct"))
+    test_return = _safe_float(test_m.get("total_return_pct"))
+    test_sharpe = _safe_float(test_m.get("sharpe_approx"))
+    test_dd = abs(_safe_float(test_m.get("max_drawdown_pct")))
+    test_trades = _safe_int(test_m.get("trades"))
     gap = abs(test_return - train_return)
 
-    if train_return <= -3:
+    if train_return <= QUALITY_GATE["min_train_return"]:
         reasons.append("negative_train")
-    if test_return <= 0:
+    if test_return <= QUALITY_GATE["min_test_return"]:
         reasons.append("low_test")
-    if gap > 6.0:
+    if gap > QUALITY_GATE["max_train_test_gap"]:
         reasons.append("train_test_gap")
-    if test_trades < 20:
+    if test_trades < QUALITY_GATE["min_test_trades"]:
         reasons.append("few_trades")
-    if test_sharpe < 0.0:
+    if test_sharpe < QUALITY_GATE["min_test_sharpe"]:
         reasons.append("low_sharpe")
-    if test_dd < -8:
+    if test_dd > QUALITY_GATE["max_test_drawdown_abs"]:
         reasons.append("deep_drawdown")
-    if abs(train_return) > 200 or abs(test_return) > 200:
+    if abs(train_return) > QUALITY_GATE["max_abs_return"] or abs(test_return) > QUALITY_GATE["max_abs_return"]:
         reasons.append("absurd_return")
 
-    is_valid = (
-        train_return > -3
-        and test_return > 0
-        and gap <= 4.0
-        and test_trades >= 20
-        and test_sharpe >= 0.0
-        and test_dd >= -8
-        and abs(train_return) <= 200
-        and abs(test_return) <= 200
-    )
-
+    is_valid = not reasons
     is_promising = (
-        test_return > 0
-        and test_trades >= 20
-        and test_dd >= -10
-        and test_sharpe >= -0.1
+        test_return > -0.25
+        and test_trades >= 15
+        and test_dd <= 10
+        and test_sharpe >= -0.10
         and abs(test_return) <= 200
     )
-
     return is_valid, is_promising, reasons
 
 
 def calculate_candidate_score(train_m: dict, test_m: dict, is_valid: bool, is_promising: bool) -> float:
-    train_return = train_m["total_return_pct"]
-    test_return = test_m["total_return_pct"]
-    test_sharpe = test_m["sharpe_approx"]
-    test_dd = abs(test_m["max_drawdown_pct"])
-    gap_penalty = abs(test_return - train_return) * 1.5
+    train_return = _safe_float(train_m.get("total_return_pct"))
+    test_return = _safe_float(test_m.get("total_return_pct"))
+    test_sharpe = _safe_float(test_m.get("sharpe_approx"))
+    test_dd = abs(_safe_float(test_m.get("max_drawdown_pct")))
+    test_trades = max(1, _safe_int(test_m.get("trades"), 1))
+    gap_penalty = abs(test_return - train_return) * 1.2
+    trade_bonus = math.log1p(test_trades) * 2.5
 
-    score = test_return * 2.0 + train_return * 0.15 + test_sharpe * 3.0 - test_dd * 0.8 - gap_penalty
+    score = test_return * 1.8 + train_return * 0.25 + test_sharpe * 6.0 + trade_bonus - test_dd * 0.85 - gap_penalty
     if is_promising:
-        score += 10
+        score += 4
     if is_valid:
-        score += 20
+        score += 10
     return round(score, 4)
+
+
+def _candidate_description(candidate: dict[str, Any]) -> str:
+    family = candidate.get("family", "unknown")
+    direction = candidate.get("direction", "n/a")
+    parts = [str(family), str(direction), f"regime={candidate.get('regime_tag', 'all')}"]
+    for key in sorted(candidate.keys()):
+        if key in {"family", "direction", "regime_tag", "candidate_key", "score", "test_return", "test_sharpe", "test_drawdown", "test_trades", "is_valid", "is_promising", "description", "selection_source"}:
+            continue
+        parts.append(f"{key}={candidate[key]}")
+    return " | ".join(parts)
 
 
 def build_active_candidates(df_res: pd.DataFrame, limit: int = 20) -> list[dict[str, Any]]:
     filtered = df_res[(df_res["is_valid"]) | (df_res["is_promising"])].copy()
-    filtered = filtered.sort_values(by=["score", "test_return"], ascending=[False, False]).head(limit)
+    if filtered.empty:
+        filtered = df_res.copy()
+
+    filtered["bucket"] = filtered["family"].astype(str) + "|" + filtered["direction"].astype(str) + "|" + filtered["regime_tag"].astype(str)
+    filtered = filtered.sort_values(by=["is_valid", "score", "test_return", "test_sharpe", "test_trades"], ascending=[False, False, False, False, False])
+
+    selected_rows = []
+    selected_keys: set[str] = set()
+    per_family: dict[str, int] = {}
+
+    def can_take(row: pd.Series) -> bool:
+        if row["candidate_key"] in selected_keys:
+            return False
+        if per_family.get(str(row["family"]), 0) >= 4:
+            return False
+        return True
+
+    def take_row(row: pd.Series, source: str) -> None:
+        selected_rows.append(row.copy())
+        selected_rows[-1]["selection_source"] = source
+        selected_keys.add(str(row["candidate_key"]))
+        fam = str(row["family"])
+        per_family[fam] = per_family.get(fam, 0) + 1
+
+    for _, group in filtered.groupby("bucket", sort=False):
+        count = 0
+        for _, row in group.iterrows():
+            if can_take(row):
+                take_row(row, "bucket_top")
+                count += 1
+            if count >= 2 or len(selected_rows) >= limit:
+                break
+        if len(selected_rows) >= limit:
+            break
+
+    if len(selected_rows) < limit:
+        for _, row in filtered.iterrows():
+            if can_take(row):
+                take_row(row, "global_fill")
+            if len(selected_rows) >= limit:
+                break
 
     candidates: list[dict[str, Any]] = []
-    for _, row in filtered.iterrows():
+    for row in selected_rows[:limit]:
         candidate = json.loads(row["candidate_json"])
         candidate.update(
             {
@@ -167,8 +263,10 @@ def build_active_candidates(df_res: pd.DataFrame, limit: int = 20) -> list[dict[
                 "test_trades": int(row["test_trades"]),
                 "is_valid": bool(row["is_valid"]),
                 "is_promising": bool(row["is_promising"]),
+                "selection_source": row.get("selection_source", "unknown"),
             }
         )
+        candidate["description"] = _candidate_description(candidate)
         candidates.append(candidate)
     return candidates
 
@@ -232,32 +330,19 @@ def run_alpha_miner() -> pd.DataFrame:
                 }
             )
 
-    df_res = pd.DataFrame(results).sort_values(
-        by=["is_valid", "is_promising", "score", "test_return"],
-        ascending=[False, False, False, False],
-    )
+    df_res = pd.DataFrame(results).sort_values(by=["is_valid", "is_promising", "score", "test_return"], ascending=[False, False, False, False])
 
     REPORTS_DIR.mkdir(exist_ok=True)
     df_res.to_csv(REPORTS_DIR / "alpha_miner_wf.csv", index=False)
-
-    valid_top = df_res[df_res["is_valid"]].head(10)
-    promising_top = df_res[df_res["is_promising"]].head(15)
-    valid_top.to_csv(REPORTS_DIR / "top_alphas.csv", index=False)
-    promising_top.to_csv(REPORTS_DIR / "promising_alphas.csv", index=False)
+    df_res[df_res["is_valid"]].to_csv(REPORTS_DIR / "validated_alphas.csv", index=False)
+    df_res[df_res["is_promising"]].to_csv(REPORTS_DIR / "promising_alphas.csv", index=False)
+    df_res[df_res["is_valid"]].head(20).to_csv(REPORTS_DIR / "top_alphas.csv", index=False)
 
     active_candidates = build_active_candidates(df_res, limit=20)
     with (REPORTS_DIR / "active_candidates.json").open("w", encoding="utf-8") as f:
         json.dump(active_candidates, f, ensure_ascii=False, indent=2)
 
-    print("\n=== VALID TOP ===")
-    print(valid_top[["candidate_key", "family", "direction", "regime_tag", "test_return", "test_sharpe", "test_drawdown", "test_trades", "score"]])
-
-    print("\n=== PROMISING TOP ===")
-    print(promising_top[["candidate_key", "family", "direction", "regime_tag", "test_return", "test_sharpe", "test_drawdown", "test_trades", "score", "reasons"]].head(15))
-
-    print("\n=== ACTIVE CANDIDATES SAVED ===")
-    print(REPORTS_DIR / "active_candidates.json")
-
+    print(df_res[["candidate_key", "family", "direction", "regime_tag", "score", "test_return", "test_sharpe", "test_trades", "is_valid"]].head(25))
     return df_res
 
 

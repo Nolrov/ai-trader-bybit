@@ -46,6 +46,7 @@ def build_signal_snapshot(settings) -> dict:
         "vote_long": decision.vote_long,
         "vote_short": decision.vote_short,
         "selected_candidates": decision.selected_candidates,
+        "policy_diagnostics": decision.diagnostics,
     }
 
 
@@ -256,13 +257,17 @@ def run_cycle(settings, args, logger: RuntimeLogger):
     snap = build_signal_snapshot(settings)
     signal_ts = snap["timestamp"]
 
+    diagnostics = snap.get("policy_diagnostics", {})
     logger.info(
         f"signal symbol={settings.data.symbol} time={signal_ts} "
         f"price={snap['price']} entry_signal={snap['entry_signal']} "
         f"desired_position={snap['desired_position']} signals_last_100={snap['signals_last_100_bars']} "
         f"regime={snap['market_regime']} confidence={snap['confidence']} "
         f"votes_long={snap['vote_long']} votes_short={snap['vote_short']} "
-        f"selected_candidates={snap['selected_candidates_count']}/{snap['active_candidates_count']}"
+        f"selected_candidates={snap['selected_candidates_count']}/{snap['active_candidates_count']} "
+        f"bank={diagnostics.get('bank_loaded', 0)} dir_ok={diagnostics.get('after_direction_filter', 0)} "
+        f"regime_ok={diagnostics.get('regime_candidates', 0)} primary={diagnostics.get('selected_primary', 0)} "
+        f"fallback={diagnostics.get('fallback_scope', 'n/a')}:{diagnostics.get('selected_fallback', 0)}"
     )
     logger.event(
         "signal_snapshot",
@@ -280,6 +285,7 @@ def run_cycle(settings, args, logger: RuntimeLogger):
             "selected_candidates_count": snap["selected_candidates_count"],
             "active_candidates_count": snap["active_candidates_count"],
             "selected_candidates": snap["selected_candidates"],
+            "policy_diagnostics": snap.get("policy_diagnostics", {}),
         },
     )
 

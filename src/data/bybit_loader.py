@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import sys
@@ -19,6 +19,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
 from config.settings import AppSettings, load_settings  # noqa: E402
+from data.candle_utils import filter_to_closed_candles, inspect_last_candle_status  # noqa: E402
 
 
 HTTP_TIMEOUT_SECONDS = 20
@@ -262,6 +263,7 @@ def print_freshness_report(df: pd.DataFrame, symbol: str, interval: str) -> None
         return
 
     freshness = compute_freshness(df)
+    candle_status = inspect_last_candle_status(df, interval=interval, now_utc=freshness["now_utc"])
 
     print()
     print(f"=== Freshness report: {symbol} {interval}m ===")
@@ -269,6 +271,8 @@ def print_freshness_report(df: pd.DataFrame, symbol: str, interval: str) -> None
     print(f"Last candle open  : {freshness['last_open_utc']}")
     print(f"Last candle MSK   : {freshness['last_open_utc'].tz_convert('Europe/Moscow')}")
     print(f"Age               : {freshness['age']}")
+    print(f"Expected close    : {candle_status['expected_close_utc']}")
+    print(f"Last bar closed   : {candle_status['is_last_bar_closed']}")
 
 
 def save_data(df: pd.DataFrame, output_path: Path) -> Path:

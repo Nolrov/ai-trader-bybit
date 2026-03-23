@@ -109,6 +109,7 @@ def main() -> None:
             avg_activity_factor=("activity_factor", "mean"),
             avg_regime_factor=("regime_factor", "mean"),
             avg_direction_factor=("direction_factor", "mean"),
+            avg_family_factor=("family_factor", "mean"),
             avg_bars_since_last_entry=("bars_since_last_entry", "mean"),
             avg_bars_since_last_position=("bars_since_last_position", "mean"),
             last_seen_timestamp=("timestamp", "max"),
@@ -123,6 +124,7 @@ def main() -> None:
         "avg_activity_factor",
         "avg_regime_factor",
         "avg_direction_factor",
+        "avg_family_factor",
         "avg_bars_since_last_entry",
         "avg_bars_since_last_position",
     ]] = short_candidate_df[[
@@ -132,6 +134,7 @@ def main() -> None:
         "avg_activity_factor",
         "avg_regime_factor",
         "avg_direction_factor",
+        "avg_family_factor",
         "avg_bars_since_last_entry",
         "avg_bars_since_last_position",
     ]].round(4)
@@ -153,13 +156,14 @@ def main() -> None:
             weight_total=("weight_total", "sum"),
             avg_activity_factor=("avg_activity_factor", "mean"),
             avg_regime_factor=("avg_regime_factor", "mean"),
+            avg_family_factor=("avg_family_factor", "mean"),
         )
         .reset_index()
         .sort_values(["hard_position_count", "raw_entry_count", "effective_weight_total"], ascending=[False, False, False])
         .reset_index(drop=True)
     )
     short_family_df["selection_rate"] = (short_family_df["selected_count"] / short_family_df["evaluated_count"].replace(0, 1)).round(4)
-    short_family_df[["effective_weight_total", "weight_total", "avg_activity_factor", "avg_regime_factor"]] = short_family_df[["effective_weight_total", "weight_total", "avg_activity_factor", "avg_regime_factor"]].round(4)
+    short_family_df[["effective_weight_total", "weight_total", "avg_activity_factor", "avg_regime_factor", "avg_family_factor"]] = short_family_df[["effective_weight_total", "weight_total", "avg_activity_factor", "avg_regime_factor", "avg_family_factor"]].round(4)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     prefix = args.output_prefix.strip() or "short_side_audit"

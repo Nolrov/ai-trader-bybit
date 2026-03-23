@@ -74,6 +74,7 @@ def main() -> None:
         "avg_activity_factor": 0.0,
         "avg_regime_factor": 0.0,
         "avg_direction_factor": 0.0,
+        "avg_family_factor": 0.0,
         "avg_bars_since_last_entry": 0.0,
         "avg_bars_since_last_position": 0.0,
         "long_contribution": 0.0,
@@ -119,6 +120,7 @@ def main() -> None:
             stat["avg_activity_factor"] += float(item.get("activity_factor", 0.0))
             stat["avg_regime_factor"] += float(item.get("regime_factor", 0.0))
             stat["avg_direction_factor"] += float(item.get("direction_factor", 0.0))
+            stat["avg_family_factor"] += float(item.get("family_factor", 1.0))
             bars_since_last_entry = item.get("bars_since_last_entry")
             if bars_since_last_entry is not None:
                 stat["avg_bars_since_last_entry"] += float(bars_since_last_entry)
@@ -197,6 +199,7 @@ def main() -> None:
             "avg_activity_factor",
             "avg_regime_factor",
             "avg_direction_factor",
+            "avg_family_factor",
             "avg_bars_since_last_entry",
             "avg_bars_since_last_position",
         ]:

@@ -13,6 +13,54 @@ FALLBACK_REGIME_FACTOR = 0.5
 DOMINANT_DIRECTION_FACTOR = 0.85
 NEUTRAL_DIRECTION_FACTOR = 1.0
 
+REGIME_FAMILY_FACTORS = {
+    "flat": {
+        "mean_reversion": 1.25,
+        "pa_false_breakout": 1.15,
+        "pa_range_rejection": 1.1,
+        "breakout": 0.8,
+        "atr_breakout": 0.85,
+        "compression_breakout": 0.9,
+        "momentum_continuation": 0.8,
+        "pa_trend_pullback": 0.85,
+        "trend_pullback": 0.85,
+        "trend_reclaim": 0.9,
+    },
+    "trend": {
+        "breakout": 1.2,
+        "pa_trend_pullback": 1.15,
+        "trend_pullback": 1.15,
+        "trend_reclaim": 1.1,
+        "momentum_continuation": 1.15,
+        "atr_breakout": 1.05,
+        "mean_reversion": 0.8,
+        "pa_false_breakout": 0.9,
+        "pa_range_rejection": 0.9,
+    },
+    "high_vol": {
+        "atr_breakout": 1.25,
+        "breakout": 1.15,
+        "compression_breakout": 1.15,
+        "pa_false_breakout": 1.0,
+        "momentum_continuation": 1.0,
+        "mean_reversion": 0.9,
+        "pa_trend_pullback": 0.95,
+        "trend_pullback": 0.95,
+    },
+    "trend_high_vol": {
+        "breakout": 1.25,
+        "atr_breakout": 1.2,
+        "compression_breakout": 1.15,
+        "pa_trend_pullback": 1.1,
+        "trend_pullback": 1.1,
+        "momentum_continuation": 1.1,
+        "trend_reclaim": 1.05,
+        "mean_reversion": 0.8,
+        "pa_false_breakout": 0.9,
+    },
+}
+DEFAULT_FAMILY_FACTOR = 1.0
+
 
 import pandas as pd
 
@@ -165,6 +213,19 @@ class PolicyManager:
             return DOMINANT_DIRECTION_FACTOR
         return NEUTRAL_DIRECTION_FACTOR
 
+    def _family_factor(self, family: str, market_regime: str, regime_tag: str, fallback: bool = False) -> float:
+        family = str(family or "").lower()
+        market_regime = str(market_regime or "flat")
+        regime_tag = str(regime_tag or "all")
+        base = float(REGIME_FAMILY_FACTORS.get(market_regime, {}).get(family, DEFAULT_FAMILY_FACTOR))
+        if fallback:
+            return round(max(0.7, min(base, 1.05)), 4)
+        if regime_tag == market_regime:
+            return round(base, 4)
+        if self._candidate_matches_regime(regime_tag, market_regime):
+            return round(max(0.75, base * 0.95), 4)
+        return round(max(0.6, base * 0.85), 4)
+
     def _run_candidate_vote(
         self,
         scoped: pd.DataFrame,
@@ -197,10 +258,13 @@ class PolicyManager:
 
         raw_score = float(candidate.get("score", 0.0))
         base_weight = max(0.0, raw_score)
-        regime_factor = self._regime_factor(str(candidate.get("regime_tag", "all")), market_regime, fallback=fallback)
+        candidate_regime_tag = str(candidate.get("regime_tag", "all"))
+        candidate_family = str(candidate.get("family", ""))
+        regime_factor = self._regime_factor(candidate_regime_tag, market_regime, fallback=fallback)
         activity_factor = self._activity_factor(recent_signals_short, recent_signals, bars_since_last_entry, bars_since_last_position)
         direction_factor = self._direction_factor(str(candidate.get("direction", "")), direction_bias)
-        effective_weight = base_weight * regime_factor * activity_factor * direction_factor
+        family_factor = self._family_factor(candidate_family, market_regime, candidate_regime_tag, fallback=fallback)
+        effective_weight = base_weight * regime_factor * activity_factor * direction_factor * family_factor
         hard_weight = effective_weight * (1.1 if entry_signal != 0 else 1.0)
 
         soft_direction = 0
@@ -232,6 +296,7 @@ class PolicyManager:
             "activity_factor": round(activity_factor, 4),
             "regime_factor": round(regime_factor, 4),
             "direction_factor": round(direction_factor, 4),
+            "family_factor": round(family_factor, 4),
             "recent_signals": recent_signals,
             "recent_signals_short": recent_signals_short,
             "bars_since_last_entry": bars_since_last_entry,
@@ -338,6 +403,7 @@ class PolicyManager:
 
         diagnostics["direction_counts"] = direction_counts
         diagnostics["direction_bias"] = direction_bias
+        diagnostics["regime_family_factors"] = REGIME_FAMILY_FACTORS.get(market_regime, {})
 
         primary_vote_rows: list[dict[str, Any]] = []
         for candidate in candidates_for_regime:

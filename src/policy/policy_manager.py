@@ -73,15 +73,21 @@ class PolicyManager:
         return "flat"
 
     def _candidate_matches_regime(self, regime_tag: str, market_regime: str) -> bool:
-        if not regime_tag or regime_tag == "all":
+        regime_tag = str(regime_tag or "all")
+        market_regime = str(market_regime or "flat")
+
+        if regime_tag == "all":
             return True
-        if regime_tag == market_regime:
-            return True
-        if regime_tag == "trend" and market_regime == "trend_high_vol":
-            return True
-        if regime_tag == "high_vol" and market_regime == "trend_high_vol":
-            return True
-        return False
+
+        compatibility_map = {
+            "flat": {"flat", "all"},
+            "trend": {"trend", "trend_high_vol", "all"},
+            "high_vol": {"high_vol", "trend_high_vol", "all"},
+            "trend_high_vol": {"trend_high_vol", "trend", "high_vol", "all"},
+        }
+
+        allowed_regimes = compatibility_map.get(market_regime, {market_regime, "all"})
+        return regime_tag in allowed_regimes
 
     def _filter_direction(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         filtered: list[dict[str, Any]] = []
@@ -218,19 +224,23 @@ class PolicyManager:
             raise RuntimeError("no_active_candidates_after_direction_filter")
 
         scoped = df.tail(int(self.policy_settings.recent_bars_for_evaluation)).copy()
-        regime_candidates = [
+        strict_regime_candidates = [
+            c for c in active_candidates if str(c.get("regime_tag", "all")) == market_regime
+        ]
+        compatible_regime_candidates = [
             c for c in active_candidates if self._candidate_matches_regime(str(c.get("regime_tag", "all")), market_regime)
         ]
-        candidates_for_regime = regime_candidates if regime_candidates else active_candidates
+        candidates_for_regime = compatible_regime_candidates if compatible_regime_candidates else active_candidates
 
         diagnostics: dict[str, Any] = {
             "market_regime": market_regime,
             "bank_loaded": len(loaded_candidates),
             "after_direction_filter": len(active_candidates),
-            "regime_candidates": len(regime_candidates),
+            "strict_regime_candidates": len(strict_regime_candidates),
+            "regime_candidates": len(compatible_regime_candidates),
             "fallback_used": False,
             "fallback_reason": None,
-            "fallback_scope": "regime" if regime_candidates else "global",
+            "fallback_scope": "compatible_regime" if compatible_regime_candidates else "global",
         }
 
         diagnostics["evaluated_candidates"] = [

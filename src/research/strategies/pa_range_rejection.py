@@ -1,8 +1,8 @@
 def get_pa_range_rejection_candidates():
     candidates = []
     for lookback in [12, 20, 30]:
-        for edge_buffer in [0.08, 0.12]:
-            for wick_ratio in [0.22, 0.32]:
+        for edge_buffer in [0.06, 0.10, 0.14]:
+            for wick_ratio in [0.18, 0.26, 0.34]:
                 for hold in [3, 6, 10]:
                     for direction in ["long", "short"]:
                         candidates.append(
@@ -33,24 +33,34 @@ def apply_pa_range_rejection(df, c):
     range_mid = range_low + range_width / 2.0
     edge_buffer = range_width * edge_buffer_ratio
 
-    compressed = (df["range_width_pct_20"] <= df["range_width_pct_20"].rolling(20).median() * 1.2).fillna(False)
-    flat_context = (df["regime_flat"] == 1) & compressed
+    baseline_width = df["range_width_pct_20"].rolling(25).median().fillna(df["range_width_pct_20"].median())
+    compressed = (df["range_width_pct_20"] <= baseline_width * 1.35).fillna(False)
+    flat_trend = (df["regime_flat"] == 1) | (df["ema_trend_strength_30m"] <= 0.005)
+    flat_context = flat_trend & compressed
 
     long_entry = (
         (df["low_15m"] <= range_low + edge_buffer)
-        & (df["close_15m"] > range_low + edge_buffer * 0.3)
+        & (df["close_15m"] > range_low + edge_buffer * 0.15)
         & (df["lower_wick_ratio_15m"] >= wick_ratio)
-        & (df["close_location_15m"] >= 0.45)
+        & (df["close_location_15m"] >= 0.40)
     )
     short_entry = (
         (df["high_15m"] >= range_high - edge_buffer)
-        & (df["close_15m"] < range_high - edge_buffer * 0.3)
+        & (df["close_15m"] < range_high - edge_buffer * 0.15)
         & (df["upper_wick_ratio_15m"] >= wick_ratio)
-        & (df["close_location_15m"] <= 0.55)
+        & (df["close_location_15m"] <= 0.60)
     )
 
-    long_exit = (df["close_15m"] >= range_mid) | (df["close_15m"] < range_low) | (df["rsi_15m"] >= 56)
-    short_exit = (df["close_15m"] <= range_mid) | (df["close_15m"] > range_high) | (df["rsi_15m"] <= 44)
+    long_exit = (
+        (df["close_15m"] >= range_mid)
+        | (df["close_15m"] < range_low - edge_buffer * 0.25)
+        | (df["rsi_15m"] >= 58)
+    )
+    short_exit = (
+        (df["close_15m"] <= range_mid)
+        | (df["close_15m"] > range_high + edge_buffer * 0.25)
+        | (df["rsi_15m"] <= 42)
+    )
 
     if c["direction"] == "long":
         entry = long_entry & flat_context

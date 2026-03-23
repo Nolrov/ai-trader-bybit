@@ -63,9 +63,19 @@ def main() -> None:
         "regime_tag": None,
         "evaluated_count": 0,
         "selected_count": 0,
+        "regime_match_count": 0,
         "raw_entry_count": 0,
         "hard_position_count": 0,
         "soft_vote_count": 0,
+        "inactive_count": 0,
+        "effective_weight_total": 0.0,
+        "weight_total": 0.0,
+        "soft_weight_total": 0.0,
+        "avg_activity_factor": 0.0,
+        "avg_regime_factor": 0.0,
+        "avg_direction_factor": 0.0,
+        "avg_bars_since_last_entry": 0.0,
+        "avg_bars_since_last_position": 0.0,
         "long_contribution": 0.0,
         "short_contribution": 0.0,
         "last_seen_timestamp": None,
@@ -103,6 +113,20 @@ def main() -> None:
             stat["direction"] = item.get("direction")
             stat["regime_tag"] = item.get("regime_tag")
             stat["evaluated_count"] += 1
+            if float(item.get("regime_factor", 0.0)) > 0:
+                stat["regime_match_count"] += 1
+            stat["effective_weight_total"] += float(item.get("effective_weight", 0.0))
+            stat["avg_activity_factor"] += float(item.get("activity_factor", 0.0))
+            stat["avg_regime_factor"] += float(item.get("regime_factor", 0.0))
+            stat["avg_direction_factor"] += float(item.get("direction_factor", 0.0))
+            bars_since_last_entry = item.get("bars_since_last_entry")
+            if bars_since_last_entry is not None:
+                stat["avg_bars_since_last_entry"] += float(bars_since_last_entry)
+            bars_since_last_position = item.get("bars_since_last_position")
+            if bars_since_last_position is not None:
+                stat["avg_bars_since_last_position"] += float(bars_since_last_position)
+            if int(item.get("entry_signal", 0)) == 0 and int(item.get("desired_position", 0)) == 0 and int(item.get("soft_direction", 0)) == 0:
+                stat["inactive_count"] += 1
             stat["last_seen_timestamp"] = ts
 
         for key, row in selected_map.items():
@@ -113,6 +137,8 @@ def main() -> None:
             stat["regime_tag"] = row.get("regime_tag")
             stat["selected_count"] += 1
             stat["last_selected_timestamp"] = ts
+            stat["weight_total"] += float(row.get("weight", 0.0))
+            stat["soft_weight_total"] += float(row.get("soft_weight", 0.0))
             if int(row.get("entry_signal", 0)) != 0:
                 stat["raw_entry_count"] += 1
             if int(row.get("desired_position", 0)) != 0:
@@ -167,8 +193,25 @@ def main() -> None:
     replay_df = pd.DataFrame(replay_rows)
     candidate_df = pd.DataFrame(candidate_stats.values())
     if not candidate_df.empty:
-        candidate_df["long_contribution"] = candidate_df["long_contribution"].round(4)
-        candidate_df["short_contribution"] = candidate_df["short_contribution"].round(4)
+        for avg_col in [
+            "avg_activity_factor",
+            "avg_regime_factor",
+            "avg_direction_factor",
+            "avg_bars_since_last_entry",
+            "avg_bars_since_last_position",
+        ]:
+            candidate_df[avg_col] = (candidate_df[avg_col] / candidate_df["evaluated_count"].replace(0, 1)).round(4)
+        for col in [
+            "effective_weight_total",
+            "weight_total",
+            "soft_weight_total",
+            "long_contribution",
+            "short_contribution",
+        ]:
+            candidate_df[col] = candidate_df[col].round(4)
+        candidate_df["selection_rate"] = (candidate_df["selected_count"] / candidate_df["evaluated_count"].replace(0, 1)).round(4)
+        candidate_df["regime_match_rate"] = (candidate_df["regime_match_count"] / candidate_df["evaluated_count"].replace(0, 1)).round(4)
+        candidate_df["inactive_rate"] = (candidate_df["inactive_count"] / candidate_df["evaluated_count"].replace(0, 1)).round(4)
         candidate_df = candidate_df.sort_values(
             ["selected_count", "raw_entry_count", "evaluated_count", "long_contribution", "short_contribution"],
             ascending=[False, False, False, False, False],

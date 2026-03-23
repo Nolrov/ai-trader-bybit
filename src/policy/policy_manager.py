@@ -323,16 +323,7 @@ class PolicyManager:
             "fallback_scope": "compatible_regime" if compatible_regime_candidates else "global",
         }
 
-        diagnostics["evaluated_candidates"] = [
-            {
-                "candidate_key": c.get("candidate_key"),
-                "family": c.get("family"),
-                "direction": c.get("direction"),
-                "regime_tag": c.get("regime_tag"),
-                "score": round(float(c.get("score", 0.0)), 4),
-            }
-            for c in candidates_for_regime[:10]
-        ]
+        diagnostics["evaluated_candidates"] = []
 
         direction_counts = {"long": 0, "short": 0}
         for candidate in candidates_for_regime:
@@ -353,6 +344,7 @@ class PolicyManager:
             vote_row = self._run_candidate_vote(scoped, candidate, market_regime, direction_bias=direction_bias, fallback=False)
             if vote_row is not None:
                 primary_vote_rows.append(vote_row)
+                diagnostics["evaluated_candidates"].append(vote_row)
 
         vote_long, vote_short, recent_signal_count, selected_candidates, vote_breakdown = self._aggregate_votes(primary_vote_rows)
         diagnostics["evaluated_primary"] = len(primary_vote_rows)

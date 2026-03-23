@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 
 import pandas as pd
@@ -31,6 +32,10 @@ def _read_csv(path: Path) -> pd.DataFrame:
     return df.sort_values("timestamp").reset_index(drop=True)
 
 
+def _skip_data_refresh() -> bool:
+    return str(os.getenv("AI_TRADER_SKIP_DATA_REFRESH", "0")).lower() in {"1", "true", "yes"}
+
+
 def _ensure_single_interval_current(
     *,
     settings: AppSettings,
@@ -41,18 +46,25 @@ def _ensure_single_interval_current(
 
     try:
         df = _read_csv(path)
+        if _skip_data_refresh():
+            return
         assert_fresh_enough(df, interval_minutes=int(interval), multiplier=2)
         return
     except (FileNotFoundError, RuntimeError):
         pass
 
-    download_and_save(
-        symbol=settings.data.symbol,
-        interval=interval,
-        total=total,
-        category=settings.data.category,
-        settings=settings,
-    )
+    try:
+        download_and_save(
+            symbol=settings.data.symbol,
+            interval=interval,
+            total=total,
+            category=settings.data.category,
+            settings=settings,
+        )
+    except Exception:
+        if path.exists():
+            return
+        raise
 
 
 def ensure_local_market_data_current(
@@ -103,7 +115,7 @@ def get_processed_market_data(
         df_15=df_15,
         df_30=df_30,
         settings=settings,
-        enforce_freshness=True,
+        enforce_freshness=not _skip_data_refresh(),
     )
 
 

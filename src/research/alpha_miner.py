@@ -229,16 +229,20 @@ def build_active_candidates(df_res: pd.DataFrame, limit: int = 20) -> list[dict[
         filtered = df_res.copy()
 
     filtered["bucket"] = filtered["family"].astype(str) + "|" + filtered["direction"].astype(str) + "|" + filtered["regime_tag"].astype(str)
-    filtered = filtered.sort_values(by=["is_valid", "score", "test_return", "test_sharpe", "test_trades"], ascending=[False, False, False, False, False])
+    filtered = filtered.sort_values(
+        by=["is_valid", "score", "test_sharpe", "test_trades", "test_return"],
+        ascending=[False, False, False, False, False],
+    )
 
     selected_rows = []
     selected_keys: set[str] = set()
     per_family: dict[str, int] = {}
+    max_per_family = max(1, int(math.floor(limit * 0.4)))
 
     def can_take(row: pd.Series) -> bool:
         if row["candidate_key"] in selected_keys:
             return False
-        if per_family.get(str(row["family"]), 0) >= 4:
+        if per_family.get(str(row["family"]), 0) >= max_per_family:
             return False
         return True
 
@@ -281,6 +285,7 @@ def build_active_candidates(df_res: pd.DataFrame, limit: int = 20) -> list[dict[
                 "is_valid": bool(row["is_valid"]),
                 "is_promising": bool(row["is_promising"]),
                 "selection_source": row.get("selection_source", "unknown"),
+                "family_share_cap": max_per_family,
             }
         )
         candidate["description"] = _candidate_description(candidate)
@@ -334,6 +339,7 @@ def build_strategy_bank_summary(state_df: pd.DataFrame) -> dict[str, Any]:
         "active_families": sorted(state_df.loc[state_df["bank_state"] == "active", "family"].astype(str).unique().tolist()),
         "active_directions": sorted(state_df.loc[state_df["bank_state"] == "active", "direction"].astype(str).unique().tolist()),
         "family_state_breakdown": family_summary.to_dict(orient="records"),
+        "active_family_counts": state_df.loc[state_df["bank_state"] == "active", "family"].astype(str).value_counts().to_dict(),
     }
 
 

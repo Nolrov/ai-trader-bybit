@@ -33,8 +33,8 @@ class DataSettings:
     category: str = "linear"
     interval_main: str = "15"
     interval_htf: str = "30"
-    bars_15m: int = 5760
-    bars_30m: int = 2880
+    bars_15m: int = 2880
+    bars_30m: int = 1440
     refresh_before_run: bool = True
     allow_stale_fallback: bool = True
 
@@ -88,8 +88,8 @@ def load_settings() -> AppSettings:
     return AppSettings(
         data=DataSettings(
             symbol=_get("AI_TRADER_SYMBOL", "BTCUSDT"),
-            bars_15m=_get_int("AI_TRADER_BARS_15M", 5760),
-            bars_30m=_get_int("AI_TRADER_BARS_30M", 2880),
+            bars_15m=_get_int("AI_TRADER_BARS_15M", 2880),
+            bars_30m=_get_int("AI_TRADER_BARS_30M", 1440),
             refresh_before_run=_get_bool("AI_TRADER_REFRESH_BEFORE_RUN", True),
             allow_stale_fallback=_get_bool("AI_TRADER_ALLOW_STALE_FALLBACK", True),
         ),

@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SOFT_SIGNAL_LOOKBACK_BARS = 20
-SOFT_SIGNAL_WEIGHT_FACTOR = 0.35
+SOFT_SIGNAL_LOOKBACK_BARS = 8
+SOFT_SIGNAL_WEIGHT_FACTOR = 0.15
 
 import pandas as pd
 
@@ -59,7 +59,36 @@ class PolicyManager:
             raise RuntimeError("no_active_candidates_after_score_filter")
 
         candidates.sort(key=lambda x: float(x.get("score", -1e9)), reverse=True)
-        return candidates[: int(self.policy_settings.max_active_candidates)]
+        max_active = int(self.policy_settings.max_active_candidates)
+        if len(candidates) <= max_active:
+            return candidates
+
+        selected: list[dict[str, Any]] = []
+        used_keys: set[str] = set()
+
+        def add_candidate(candidate: dict[str, Any]) -> None:
+            key = str(candidate.get("candidate_key") or "")
+            if key in used_keys:
+                return
+            used_keys.add(key)
+            selected.append(candidate)
+
+        short_candidates = [c for c in candidates if str(c.get("direction", "")).lower() == "short"]
+        long_candidates = [c for c in candidates if str(c.get("direction", "")).lower() == "long"]
+
+        min_short = 0
+        if self.risk_settings.allow_short and short_candidates:
+            min_short = min(max(2, max_active // 4), len(short_candidates), max_active)
+            for candidate in short_candidates[:min_short]:
+                add_candidate(candidate)
+
+        # Keep the rest score-first, regardless of direction, after preserving short coverage.
+        for candidate in candidates:
+            if len(selected) >= max_active:
+                break
+            add_candidate(candidate)
+
+        return selected[:max_active]
 
     def _detect_market_regime(self, df: pd.DataFrame) -> str:
         last = df.iloc[-1]
@@ -124,7 +153,7 @@ class PolicyManager:
             bars_since_last_position = int(len(df_signal) - 1 - df_signal.index.get_loc(last_position_idx[-1]))
 
         raw_score = float(candidate.get("score", 0.0))
-        base_weight = max(0.1, raw_score)
+        base_weight = max(0.0, raw_score)
         if str(candidate.get("regime_tag", "all")) == market_regime:
             base_weight *= 1.15
         hard_weight = base_weight * (1.1 if entry_signal != 0 else 1.0)
@@ -136,12 +165,12 @@ class PolicyManager:
             if recent_signals_short > 0 and bars_since_last_entry is not None and bars_since_last_entry <= SOFT_SIGNAL_LOOKBACK_BARS:
                 last_recent_nonzero = int(entry_series[entry_series != 0].iloc[-1])
                 soft_direction = 1 if last_recent_nonzero > 0 else -1
-                soft_weight = base_weight * SOFT_SIGNAL_WEIGHT_FACTOR
+                soft_weight = max(0.05, base_weight * SOFT_SIGNAL_WEIGHT_FACTOR)
                 soft_reason = f"recent_entry_within_{SOFT_SIGNAL_LOOKBACK_BARS}_bars"
             elif bars_since_last_position is not None and bars_since_last_position <= min(5, SOFT_SIGNAL_LOOKBACK_BARS):
                 last_recent_position = int(position_series[position_series != 0].iloc[-1])
                 soft_direction = 1 if last_recent_position > 0 else -1
-                soft_weight = base_weight * (SOFT_SIGNAL_WEIGHT_FACTOR * 0.75)
+                soft_weight = max(0.03, base_weight * (SOFT_SIGNAL_WEIGHT_FACTOR * 0.75))
                 soft_reason = "recent_position_decay"
 
         return {
@@ -236,6 +265,7 @@ class PolicyManager:
             "market_regime": market_regime,
             "bank_loaded": len(loaded_candidates),
             "after_direction_filter": len(active_candidates),
+            "shorts_enabled": bool(self.risk_settings.allow_short),
             "strict_regime_candidates": len(strict_regime_candidates),
             "regime_candidates": len(compatible_regime_candidates),
             "fallback_used": False,

@@ -53,7 +53,7 @@ class RiskSettings:
     max_daily_loss_pct: float = 2.0
     max_consecutive_losses: int = 3
     allow_long: bool = True
-    allow_short: bool = False
+    allow_short: bool = True
     one_position_only: bool = True
     take_profit_pct: float = 0.01
     stop_loss_pct: float = 0.005
@@ -104,7 +104,7 @@ def load_settings() -> AppSettings:
             max_daily_loss_pct=_get_float("AI_TRADER_MAX_DAILY_LOSS_PCT", 2.0),
             max_consecutive_losses=_get_int("AI_TRADER_MAX_CONSECUTIVE_LOSSES", 3),
             allow_long=_get_bool("AI_TRADER_ALLOW_LONG", True),
-            allow_short=_get_bool("AI_TRADER_ALLOW_SHORT", False),
+            allow_short=_get_bool("AI_TRADER_ALLOW_SHORT", True),
             one_position_only=_get_bool("AI_TRADER_ONE_POSITION_ONLY", True),
             take_profit_pct=_get_float("AI_TRADER_TAKE_PROFIT_PCT", 0.01),
             stop_loss_pct=_get_float("AI_TRADER_STOP_LOSS_PCT", 0.005),

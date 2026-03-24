@@ -473,3 +473,28 @@ Mainnet — только после testnet.
 
 Следующий приоритет:
 > усилить quality research-layer, удержать adaptive policy, затем довести систему до testnet и только после этого до реальной торговли.
+
+
+## Unified startup
+
+The project now supports a single application entrypoint:
+
+```powershell
+python -m src.app.main
+```
+
+What it does on startup:
+- loads settings
+- refreshes market data from Bybit
+- ensures `reports/active_candidates.json` exists (rebuilds via alpha miner if missing or empty)
+- starts the live/testnet/mainnet loop based on `AI_TRADER_MODE`
+
+Useful options:
+
+```powershell
+python -m src.app.main --once
+python -m src.app.main --bank-only
+python -m src.app.main --rebuild-bank
+```
+
+Legacy module entrypoints remain available as thin developer tools, but the recommended runtime entrypoint is `src.app.main`.

@@ -1,5 +1,4 @@
-def main():
-    print("AI Trader started")
+from src.app.main import main
 
 
 if __name__ == "__main__":

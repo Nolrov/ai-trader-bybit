@@ -566,10 +566,11 @@ def run_cycle(settings, args, logger: RuntimeLogger):
     state_store.save(state)
 
 
-def main():
-    args = parse_args()
-    settings = load_settings()
-    logger = RuntimeLogger(LOGS_DIR)
+def run_live_loop(*, settings: AppSettings | None = None, logger: RuntimeLogger | None = None, once: bool = False) -> None:
+    if settings is None:
+        settings = load_settings()
+    if logger is None:
+        logger = RuntimeLogger(LOGS_DIR)
 
     logger.info(
         f"startup mode={settings.execution.mode} testnet={settings.execution.testnet} "
@@ -577,7 +578,8 @@ def main():
         f"interval_htf={settings.data.interval_htf} active_candidates_file={settings.policy.active_candidates_file}"
     )
 
-    if args.once:
+    args = argparse.Namespace(once=once)
+    if once:
         run_cycle(settings, args, logger)
         return
 
@@ -590,6 +592,11 @@ def main():
         except Exception as exc:
             logger.warning(f"cycle_failed error={exc}")
         time.sleep(settings.runtime.poll_seconds)
+
+
+def main():
+    args = parse_args()
+    run_live_loop(once=args.once)
 
 
 if __name__ == "__main__":

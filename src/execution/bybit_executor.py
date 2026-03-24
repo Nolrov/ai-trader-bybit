@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from urllib.parse import urlencode
 
 import hashlib
@@ -238,7 +238,7 @@ class BybitExecutor:
         return data
 
     def get_open_position(self, symbol: str, category: str = "linear") -> Dict[str, Any] | None:
-        if self.settings.mode == "paper":
+        if self.settings.mode in {"paper", "research"}:
             return None
 
         data = self._signed_get(
@@ -286,7 +286,7 @@ class BybitExecutor:
         return None
 
     def get_active_orders(self, symbol: str, category: str = "linear") -> list[Dict[str, Any]]:
-        if self.settings.mode == "paper":
+        if self.settings.mode in {"paper", "research"}:
             return []
 
         data = self._signed_get(
@@ -312,14 +312,14 @@ class BybitExecutor:
         return active_orders
 
     def sync_exchange_state(self, symbol: str, category: str = "linear") -> ExchangeSyncResult:
-        if self.settings.mode == "paper":
+        if self.settings.mode in {"paper", "research"}:
             return ExchangeSyncResult(
                 ok=True,
                 symbol=symbol,
                 category=category,
                 position=None,
                 active_orders=[],
-                message="paper_mode_no_exchange_state",
+                message="research_mode_no_exchange_state",
             )
 
         try:
@@ -487,7 +487,7 @@ class BybitExecutor:
                     raw={"instrument": instrument},
                 )
 
-        if self.settings.mode == "paper":
+        if self.settings.mode in {"paper", "research"}:
             raw_payload = {
                 "symbol": symbol,
                 "side": side,
@@ -505,12 +505,12 @@ class BybitExecutor:
 
             return ExecutionResult(
                 ok=True,
-                mode="paper",
+                mode="research",
                 side=side,
                 qty=normalized_qty,
                 symbol=symbol,
                 order_type=order_type,
-                message="paper_order_emitted",
+                message="research_order_emitted",
                 raw=raw_payload,
             )
 

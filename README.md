@@ -48,7 +48,7 @@
 - run_candidate работает через `candidate_key`, а не через `candidate_id`
 - active bank формируется автоматически
 - policy layer существует и используется в live
-- live loop стабилен в `paper` режиме
+- live loop стабилен в `research` режиме
 - execution и risk manager встроены в pipeline
 - logging и state работают
 - есть diagnostics для policy
@@ -216,7 +216,7 @@ Risk manager:
 ## Текущее реальное поведение системы
 
 ### Live
-Live работает в `paper` режиме и корректно проходит весь pipeline.
+Live работает в `research` режиме и корректно проходит весь pipeline.
 
 ### Policy
 Policy уже не “немой”.
@@ -265,7 +265,7 @@ PA-направление уже интегрировано и является 
 - не выключать стратегии руками “на время”
 - не форсить баланс long/short искусственно
 - не пытаться лечить всё через policy, если проблема в качестве research-layer
-- не включать mainnet, пока paper/testnet и observability не закрыты
+- не включать mainnet, пока research/testnet и observability не закрыты
 
 ---
 
@@ -324,25 +324,25 @@ python src/policy/policy_replay.py --bars 800
 
 ### Этап 3 — Paper trading as validation gate
 Когда research-layer станет устойчивее:
-- регулярно гонять live в `paper`
+- регулярно гонять live в `research`
 - смотреть частоту решений
 - проверять, не ломает ли policy хороший research
 - дорабатывать observability и execution detail
 
 Цель:
-> доказать, что система стабильно ведёт себя как трейдер в paper-runtime, а не только в backtest
+> доказать, что система стабильно ведёт себя как трейдер в research-runtime, а не только в backtest
 
 ---
 
 ### Этап 4 — Testnet trading
-После устойчивого paper:
+После устойчивого research:
 - подключить testnet execution
 - проверить ордера, состояние, восстановление после ошибок
 - проверить risk / order lifecycle / state sync
 - подтвердить, что runtime переживает реальные API-циклы
 
 Цель:
-> перейти от paper-сигналов к реальному исполнению в безопасной среде
+> перейти от research-сигналов к реальному исполнению в безопасной среде
 
 ---
 
@@ -365,11 +365,11 @@ python src/policy/policy_replay.py --bars 800
 
 Правильная цепочка развития:
 
-`research quality → policy stability → paper validation → testnet execution → mainnet rollout`
+`research quality → policy stability → research runtime → testnet execution → mainnet rollout`
 
 То есть:
 - сначала строим рабочий банк
-- потом подтверждаем устойчивость на replay/paper
+- потом подтверждаем устойчивость на replay/research
 - потом выходим в testnet
 - потом в реальную торговлю
 
@@ -455,7 +455,7 @@ python src/policy/policy_replay.py --bars 800
 Существует, встроен в live и уже является рабочим управляющим слоем.
 
 ### Execution
-Готов для paper/testnet цикла.
+Готов для research/testnet цикла.
 
 ### Trading
 Paper — активен.  
@@ -469,7 +469,7 @@ Mainnet — только после testnet.
 Проект больше не является “инфраструктурой без торгового мозга”.
 
 Сейчас это:
-> multi-strategy adaptive trading system в стадии research/paper validation
+> multi-strategy adaptive trading system в стадии research runtime / testnet validation
 
 Следующий приоритет:
 > усилить quality research-layer, удержать adaptive policy, затем довести систему до testnet и только после этого до реальной торговли.

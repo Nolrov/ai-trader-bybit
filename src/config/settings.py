@@ -63,7 +63,7 @@ class RiskSettings:
 
 @dataclass
 class ExecutionSettings:
-    mode: str = "paper"
+    mode: str = "research"
     testnet: bool = True
     api_key: str = ""
     api_secret: str = ""
@@ -114,7 +114,7 @@ def load_settings() -> AppSettings:
             stop_loss_pct=_get_float("AI_TRADER_STOP_LOSS_PCT", 0.005),
         ),
         execution=ExecutionSettings(
-            mode=_get("AI_TRADER_MODE", "paper"),
+            mode=_get("AI_TRADER_MODE", "research"),
             testnet=_get_bool("AI_TRADER_TESTNET", True),
             api_key=_get("BYBIT_API_KEY", ""),
             api_secret=_get("BYBIT_API_SECRET", ""),

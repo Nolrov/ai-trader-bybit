@@ -1,23 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
-
-from config.settings import AppSettings, LOGS_DIR, load_settings
-from data.market_data_manager import get_processed_market_data
-from execution.bybit_executor import BybitExecutor
-from live.state_store import StateStore
-from policy.policy_manager import PolicyManager
-from research.alpha_miner import prepare_pa_features
-from risk.risk_manager import RiskManager
-from utils.runtime_logger import RuntimeLogger
+from src.config.settings import AppSettings, LOGS_DIR, load_settings
+from src.data.market_data_manager import get_processed_market_data
+from src.execution.bybit_executor import BybitExecutor
+from src.live.state_store import StateStore
+from src.policy.policy_manager import PolicyManager
+from src.research.alpha_miner import prepare_pa_features
+from src.risk.risk_manager import RiskManager
+from src.utils.runtime_logger import RuntimeLogger
 
 
 def parse_args():
